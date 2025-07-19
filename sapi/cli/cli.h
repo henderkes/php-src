@@ -56,4 +56,10 @@ typedef struct php_cli_server_context {
 	php_cli_mode mode;
 } php_cli_server_context;
 
+#ifdef PHP_CLI_WIN32_NO_CONSOLE
+PHPAPI int do_php_cli(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd);
+#else
+PHPAPI int do_php_cli(int argc, char *argv[]);
+#endif
+
 #endif /* CLI_H */
