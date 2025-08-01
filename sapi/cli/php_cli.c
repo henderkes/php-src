@@ -93,6 +93,7 @@
 #endif
 
 /* {{{ main */
+#ifndef NO_CLI_MAIN
 #ifdef PHP_CLI_WIN32_NO_CONSOLE
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
@@ -103,5 +104,6 @@ int main(int argc, char *argv[])
 {
     return do_php_cli(argc, argv);
 }
+#endif
 #endif
 /* }}} */
