@@ -245,7 +245,7 @@ AC_COMPILE_IFELSE(
     #ifdef __USE_GNU
     #error Not using musl
     #endif
-    int main() { return 0; }
+    int main(void) { return 0; }
   ]])],
   [AC_MSG_RESULT([yes])
    AC_DEFINE([__MUSL__], [1], [Define to 1 when using musl libc.])],
