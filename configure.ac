@@ -1707,7 +1707,7 @@ PHP_ADD_SOURCES_X([main],
   [no])
 
 PHP_ADD_SOURCES_X([main],
-  [cli_request.c ps_title.c php_cli_process_title.c],
+  [cli_request.c ps_title.c php_cli_process_title.c php_cli_server.c php_http_parser.c],
   [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1],
   [PHP_CLI_REQUEST_OBJS],
   [no])

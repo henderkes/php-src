@@ -36,6 +36,7 @@
 #include "win32/signal.h"
 #include "win32/console.h"
 #include <process.h>
+#include <shellapi.h>
 #endif
 #ifdef HAVE_SYS_TIME_H
 #include <sys/time.h>
@@ -74,6 +75,7 @@
 #include "ps_title.h"
 #include "php_cli_process_title.h"
 #include "php_cli_process_title_arginfo.h"
+#include "php_cli_server.h"
 
 #ifndef PHP_WIN32
 # define php_select(m, r, w, e, t)	select(m, r, w, e, t)
@@ -1138,6 +1140,12 @@ err:
 
 PHPAPI int handle_cli_request(int argc, char **argv)
 {
+#if defined(PHP_WIN32)
+	int num_args;
+	wchar_t **argv_wide;
+	char **argv_save = argv;
+	BOOL using_wide_argv = 0;
+#endif
 	int c;
 	int exit_status = SUCCESS;
 	int module_started = 0, sapi_started = 0;
@@ -1224,11 +1232,9 @@ PHPAPI int handle_cli_request(int argc, char **argv)
 				php_ini_builder_define(&ini_builder, php_optarg);
 				break;
 			case 'S':
-				/* -S is not supported in handle_cli_request;
-				 * the built-in server requires the full CLI SAPI binary. */
-				fprintf(stderr, "The built-in web server (-S) is not available in this context.\n");
-				exit_status = 1;
-				goto out;
+				sapi_module_ptr = &cli_server_sapi_module;
+				cli_server_sapi_module.additional_functions = server_additional_functions;
+				break;
 			case 'h': /* help & quit */
 			case '?':
 				php_cli_usage(argv[0]);
@@ -1258,7 +1264,9 @@ exit_loop:
 
 	sapi_module_ptr->executable_location = argv[0];
 
-	php_ini_builder_prepend_literal(&ini_builder, HARDCODED_INI);
+	if (sapi_module_ptr == &cli_sapi_module) {
+		php_ini_builder_prepend_literal(&ini_builder, HARDCODED_INI);
+	}
 
 	sapi_module_ptr->ini_entries = php_ini_builder_finish(&ini_builder);
 
@@ -1280,13 +1288,9 @@ exit_loop:
 	/* Ignore the delivered argv and argc, read from W API. This place
 		might be too late though, but this is the earliest place ATW
 		we can access the internal charset information from PHP. */
-	{
-		int num_args;
-		wchar_t **argv_wide;
-		argv_wide = CommandLineToArgvW(GetCommandLineW(), &num_args);
-		PHP_WIN32_CP_W_TO_ANY_ARRAY(argv_wide, num_args, argv, argc)
-		LocalFree(argv_wide);
-	}
+	argv_wide = CommandLineToArgvW(GetCommandLineW(), &num_args);
+	PHP_WIN32_CP_W_TO_ANY_ARRAY(argv_wide, num_args, argv, argc)
+	using_wide_argv = 1;
 
 	SetConsoleCtrlHandler(php_cli_win32_ctrl_handler, TRUE);
 #endif
@@ -1297,7 +1301,11 @@ exit_loop:
 	}
 
 	zend_first_try {
-		exit_status = do_cli(argc, argv);
+		if (sapi_module_ptr == &cli_sapi_module) {
+			exit_status = do_cli(argc, argv);
+		} else {
+			exit_status = do_cli_server(argc, argv);
+		}
 	} zend_end_try();
 out:
 	if (ini_path_override) {
@@ -1316,6 +1324,12 @@ out:
 
 #if defined(PHP_WIN32)
 	(void)php_win32_cp_cli_restore();
+
+	if (using_wide_argv) {
+		PHP_WIN32_CP_FREE_ARRAY(argv, argc);
+		LocalFree(argv_wide);
+	}
+	argv = argv_save;
 #endif
 	/*
 	 * Do not move this de-initialization. It needs to happen right before
