@@ -5,6 +5,13 @@ PHP_ARG_ENABLE([cli],
   [yes],
   [no])
 
+PHP_ARG_ENABLE([cli-lib],,
+  [AS_HELP_STRING([[--enable-cli-lib[=TYPE]]],
+    [Enable building of CLI SAPI library. TYPE is either
+    'shared' or 'static'. [TYPE=shared]])],
+  [no],
+  [no])
+
 if test "$PHP_CLI" != "no"; then
   AC_CHECK_FUNCS([setproctitle])
 
@@ -29,11 +36,16 @@ if test "$PHP_CLI" != "no"; then
   dnl Set filename.
   SAPI_CLI_PATH=sapi/cli/php
 
+  dnl When building a shared CLI library, ensure CLI objects are compiled with PIC.
+  CLI_EXTRA_CFLAGS="-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1"
+  AS_CASE([$PHP_CLI_LIB],
+    [yes|shared], [CLI_EXTRA_CFLAGS="$CLI_EXTRA_CFLAGS -fPIC"])
+
   dnl Select SAPI.
   PHP_SELECT_SAPI([cli],
     [program],
-    [php_cli.c php_http_parser.c php_cli_server.c ps_title.c php_cli_process_title.c],
-    [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
+    [php_cli.c php_cli_main.c php_http_parser.c php_cli_server.c ps_title.c php_cli_process_title.c],
+    [$CLI_EXTRA_CFLAGS])
 
   AS_CASE([$host_alias],
     [*aix*], [
@@ -59,4 +71,44 @@ if test "$PHP_CLI" != "no"; then
   AC_CONFIG_FILES([sapi/cli/php.1])
 
   PHP_INSTALL_HEADERS([sapi/cli], [cli.h])
+fi
+
+if test "$PHP_CLI_LIB" != "no"; then
+  if test "$PHP_CLI" = "no"; then
+    AC_MSG_ERROR([--enable-cli-lib requires --enable-cli (the default)])
+  fi
+
+  AC_MSG_CHECKING([for CLI SAPI library support])
+
+  dnl CLI library objects: same as CLI but without php_cli_main (which has main()).
+  PHP_CLI_LIB_OBJS="sapi/cli/php_cli.lo sapi/cli/php_http_parser.lo sapi/cli/php_cli_server.lo sapi/cli/ps_title.lo sapi/cli/php_cli_process_title.lo"
+
+  AS_CASE([$PHP_CLI_LIB],
+    [yes|shared], [
+      AC_MSG_RESULT([shared])
+      AS_CASE([$host_alias],
+        [*darwin*], [
+          SAPI_CLI_LIB_PATH=sapi/cli/libphpcli.dylib
+          BUILD_CLI_LIB="\$(CC) -dynamiclib \$(CFLAGS_CLEAN) \$(EXTRA_CFLAGS) \$(LDFLAGS) -o \$(SAPI_CLI_LIB_PATH) \$(PHP_CLI_LIB_OBJS:.lo=.o) -Llibs -lphp"
+          INSTALL_CLI_LIB="\$(INSTALL) -m 0755 \$(SAPI_CLI_LIB_PATH) \$(INSTALL_ROOT)\$(orig_libdir)/libphpcli.dylib"
+        ], [
+          SAPI_CLI_LIB_PATH=sapi/cli/libphpcli.so
+          BUILD_CLI_LIB="\$(CC) -shared \$(CFLAGS_CLEAN) \$(EXTRA_CFLAGS) \$(LDFLAGS) -o \$(SAPI_CLI_LIB_PATH) \$(PHP_CLI_LIB_OBJS:.lo=.o) -Llibs -lphp"
+          INSTALL_CLI_LIB="\$(INSTALL) -m 0755 \$(SAPI_CLI_LIB_PATH) \$(INSTALL_ROOT)\$(orig_libdir)/libphpcli.so"
+        ])
+    ],
+    [static], [
+      AC_MSG_RESULT([static])
+      SAPI_CLI_LIB_PATH=sapi/cli/libphpcli.a
+      BUILD_CLI_LIB="\$(AR) rcs \$(SAPI_CLI_LIB_PATH) \$(PHP_CLI_LIB_OBJS:.lo=.o)"
+      INSTALL_CLI_LIB="\$(INSTALL) -m 0644 \$(SAPI_CLI_LIB_PATH) \$(INSTALL_ROOT)\$(orig_libdir)/libphpcli.a"
+    ],
+    [AC_MSG_ERROR([Invalid value for --enable-cli-lib: $PHP_CLI_LIB])])
+
+  install_binary_targets="$install_binary_targets install-cli-lib"
+
+  PHP_SUBST([PHP_CLI_LIB_OBJS])
+  PHP_SUBST([SAPI_CLI_LIB_PATH])
+  PHP_SUBST([BUILD_CLI_LIB])
+  PHP_SUBST([INSTALL_CLI_LIB])
 fi

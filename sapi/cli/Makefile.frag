@@ -10,3 +10,13 @@ install-cli: $(SAPI_CLI_PATH)
 	@echo "Installing PHP CLI man page:      $(INSTALL_ROOT)$(mandir)/man1/"
 	@$(mkinstalldirs) $(INSTALL_ROOT)$(mandir)/man1
 	@$(INSTALL_DATA) sapi/cli/php.1 $(INSTALL_ROOT)$(mandir)/man1/$(program_prefix)php$(program_suffix).1
+
+cli-lib: $(SAPI_CLI_LIB_PATH)
+
+$(SAPI_CLI_LIB_PATH): $(PHP_CLI_LIB_OBJS) $(OVERALL_TARGET)
+	$(BUILD_CLI_LIB)
+
+install-cli-lib: cli-lib
+	@echo "Installing PHP CLI library:        $(INSTALL_ROOT)$(orig_libdir)/"
+	@$(mkinstalldirs) $(INSTALL_ROOT)$(orig_libdir)
+	@$(INSTALL_CLI_LIB)
