@@ -619,6 +619,23 @@ dnl Check for functions inside their belonging headers.
 AC_CHECK_HEADER([sys/prctl.h], [AC_CHECK_FUNCS([prctl])])
 AC_CHECK_HEADER([sys/procctl.h], [AC_CHECK_FUNCS([procctl])])
 
+dnl Process title support (used by CLI and embed SAPIs via cli_request)
+AC_CHECK_FUNCS([setproctitle])
+AC_CHECK_HEADERS([sys/pstat.h])
+AC_CACHE_CHECK([for PS_STRINGS], [php_cv_var_PS_STRINGS],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([
+    #include <machine/vmparam.h>
+    #include <sys/exec.h>
+  ],
+  [
+    PS_STRINGS->ps_nargvstr = 1;
+    PS_STRINGS->ps_argvstr = "foo";
+  ])],
+  [php_cv_var_PS_STRINGS=yes],
+  [php_cv_var_PS_STRINGS=no])])
+AS_VAR_IF([php_cv_var_PS_STRINGS], [yes],
+  [AC_DEFINE([HAVE_PS_STRINGS], [], [Define if the PS_STRINGS exists.])])
+
 AX_FUNC_WHICH_GETHOSTBYNAME_R
 
 dnl Some systems (Solaris 10) do not have nanosleep in libc.
@@ -1449,6 +1466,7 @@ AS_VAR_IF([PHP_BUILD_ARCH],,,
     [The build architecture.])])
 
 PHP_SUBST([PHP_FASTCGI_OBJS])
+PHP_SUBST([PHP_CLI_REQUEST_OBJS])
 PHP_SUBST([PHP_SAPI_OBJS])
 PHP_SUBST([PHP_BINARY_OBJS])
 PHP_SUBST([PHP_GLOBAL_OBJS])
@@ -1686,6 +1704,12 @@ PHP_ADD_SOURCES_X([main],
   [fastcgi.c],
   [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1],
   [PHP_FASTCGI_OBJS],
+  [no])
+
+PHP_ADD_SOURCES_X([main],
+  [cli_request.c ps_title.c php_cli_process_title.c],
+  [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1],
+  [PHP_CLI_REQUEST_OBJS],
   [no])
 
 PHP_ADD_SOURCES([main/streams], m4_normalize([

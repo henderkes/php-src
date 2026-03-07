@@ -23,6 +23,7 @@
 #include <main/php_variables.h>
 #include <main/php_ini.h>
 #include <zend_ini.h>
+#include <main/cli_request.h>
 
 #define PHP_EMBED_START_BLOCK(x,y) { \
     php_embed_init(x, y); \
