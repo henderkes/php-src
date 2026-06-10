@@ -34,6 +34,15 @@
 # if defined(__x86_64__)
 register zend_execute_data* volatile execute_data __asm__("%r14");
 register const zend_op* volatile opline __asm__("%r15");
+#  if defined(ZTS) && !defined(__clang__)
+/* The hybrid interpreter holds the executor-globals pointer in r13, and the
+ * opcode handlers read EG() through it (see ZEND_VM_HOLD_EG_IN_REG in
+ * zend_execute.c). zend_jit_trace_execute() dispatches those same handlers for
+ * not-yet-compiled trace opcodes, so it must keep r13 = EG base across the call.
+ * Reserve r13 here (so it isn't used as a scratch register) and re-establish it
+ * on entry below. */
+register void * volatile _zend_eg_reg __asm__("r13");
+#  endif
 # elif defined(i386)
 register zend_execute_data* volatile execute_data __asm__("%esi");
 register const zend_op* volatile opline __asm__("%edi");
@@ -759,6 +768,13 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 
 	execute_data = ex;
 	opline = EX(opline) = op;
+# if defined(__x86_64__) && defined(ZTS) && !defined(__clang__)
+	/* Re-establish the executor-globals pointer in r13 before dispatching opcode
+	 * handlers below: the VM<->JIT call path may have used r13 as a scratch
+	 * register, and the handlers read EG() through it. It stays valid for the
+	 * rest of this function because r13 is reserved in this TU (see above). */
+	_zend_eg_reg = (char*)_tsrm_ls_cache + ZEND_EG_OFFSET;
+# endif
 #else
 	zend_execute_data *execute_data = ex;
 	const zend_op *opline = EX(opline) = op;

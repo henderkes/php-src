@@ -329,6 +329,19 @@ struct _zend_executor_globals {
 	void *reserved[ZEND_MAX_RESERVED_RESOURCES];
 };
 
+#ifdef ZTS
+/* The hot engine globals are placed at fixed, compile-time-constant offsets in
+ * the reserved fast-resource space via ts_allocate_fast_id_at(), removing the
+ * runtime offset load from every CG()/EG()/SCNG()/AG() access. The layout is
+ * compiler, executor, language-scanner, then alloc globals; alloc_globals
+ * (ZEND_AG_OFFSET) is defined alongside its private struct in zend_alloc.c and
+ * is the topmost slot. zend_startup()/start_memory_manager() assert the offsets
+ * handed back by TSRM match these. */
+# define ZEND_CG_OFFSET   (TSRM_FAST_RESERVED_BASE)
+# define ZEND_EG_OFFSET   (ZEND_CG_OFFSET + TSRM_ALIGNED_SIZE(sizeof(zend_compiler_globals)))
+# define ZEND_SCNG_OFFSET (ZEND_EG_OFFSET + TSRM_ALIGNED_SIZE(sizeof(zend_executor_globals)))
+#endif
+
 #define EG_FLAGS_INITIAL				(0)
 #define EG_FLAGS_IN_SHUTDOWN			(1<<0)
 #define EG_FLAGS_OBJECT_STORE_NO_REUSE	(1<<1)

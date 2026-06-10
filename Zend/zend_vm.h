@@ -40,7 +40,11 @@ void zend_vm_init(void);
 void zend_vm_dtor(void);
 
 #if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
+# ifdef ZTS
+const struct _zend_op *ZEND_FASTCALL zend_vm_handle_interrupt(struct _zend_execute_data *execute_data, const struct _zend_op *opline, void *tsrm_ls_cache);
+# else
 const struct _zend_op *ZEND_FASTCALL zend_vm_handle_interrupt(struct _zend_execute_data *execute_data, const struct _zend_op *opline);
+# endif
 #endif
 
 END_EXTERN_C()

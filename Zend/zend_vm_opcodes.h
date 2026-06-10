@@ -67,8 +67,13 @@ static const char *const zend_vm_kind_name[] = {
 typedef const void* zend_vm_opcode_handler_t;
 typedef void (ZEND_FASTCALL *zend_vm_opcode_handler_func_t)(void);
 #elif ZEND_VM_KIND == ZEND_VM_KIND_CALL || ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
+# ifdef ZTS
+typedef const struct _zend_op *(ZEND_OPCODE_HANDLER_CCONV *zend_vm_opcode_handler_t)(struct _zend_execute_data *execute_data, const struct _zend_op *opline, void *tsrm_ls_cache);
+typedef const struct _zend_op *(ZEND_OPCODE_HANDLER_FUNC_CCONV *zend_vm_opcode_handler_func_t)(struct _zend_execute_data *execute_data, const struct _zend_op *opline, void *tsrm_ls_cache);
+# else
 typedef const struct _zend_op *(ZEND_OPCODE_HANDLER_CCONV *zend_vm_opcode_handler_t)(struct _zend_execute_data *execute_data, const struct _zend_op *opline);
 typedef const struct _zend_op *(ZEND_OPCODE_HANDLER_FUNC_CCONV *zend_vm_opcode_handler_func_t)(struct _zend_execute_data *execute_data, const struct _zend_op *opline);
+# endif
 #elif ZEND_VM_KIND == ZEND_VM_KIND_SWITCH
 typedef int zend_vm_opcode_handler_t;
 #elif ZEND_VM_KIND == ZEND_VM_KIND_GOTO

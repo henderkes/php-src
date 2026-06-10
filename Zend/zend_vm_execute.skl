@@ -2,6 +2,11 @@
 
 {%DEFINES%}
 
+#ifndef ZEND_VM_ENTER_LS_CACHE
+# define ZEND_VM_ENTER_LS_CACHE()
+# define ZEND_VM_LEAVE_LS_CACHE()
+#endif
+
 #if (ZEND_VM_KIND != ZEND_VM_KIND_CALL) && (ZEND_GCC_VERSION >= 4000) && !defined(__clang__)
 # pragma GCC push_options
 # pragma GCC optimize("no-gcse")
@@ -19,6 +24,8 @@ ZEND_API void {%EXECUTOR_NAME%}_ex(zend_execute_data *ex)
 #if defined(__GNUC__) && defined(__aarch64__)
 	__asm__ __volatile__ (""::: "v8","v9","v10","v11","v12","v13","v14","v15");
 #endif
+
+	ZEND_VM_ENTER_LS_CACHE();
 
 	{%HELPER_VARS%}
 
@@ -56,7 +63,10 @@ ZEND_API void zend_{%EXECUTOR_NAME%}(zend_op_array *op_array, zval *return_value
 	void *object_or_called_scope;
 	uint32_t call_info;
 
+	ZEND_VM_ENTER_LS_CACHE();
+
 	if (EG(exception) != NULL) {
+		ZEND_VM_LEAVE_LS_CACHE();
 		return;
 	}
 
@@ -80,6 +90,7 @@ ZEND_API void zend_{%EXECUTOR_NAME%}(zend_op_array *op_array, zval *return_value
 	zend_{%EXECUTOR_NAME%}_ex(execute_data);
 	/* Observer end handlers are called from ZEND_RETURN */
 	zend_vm_stack_free_call_frame(execute_data);
+	ZEND_VM_LEAVE_LS_CACHE();
 }
 
 {%EXTERNAL_EXECUTOR%}

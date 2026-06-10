@@ -19,6 +19,40 @@
 
 #define ZEND_INTENSIVE_DEBUGGING 0
 
+/* In ZTS builds, keep the per-thread TSRM resource block pointer (the base from
+ * which EG()/CG()/etc. are reached) live in a callee-saved register across the
+ * whole interpreter loop, so that EG()/CG() on the VM hot path cost the same as
+ * NTS (a register-relative load) instead of a TLS fetch. This is scoped to this
+ * translation unit only; every other TU keeps using the normal TLS fetch. The
+ * register variable must be declared before any function definition, which is
+ * why the config header is pulled in here first. */
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
+# include <main/php_config.h>
+# if defined(ZTS) && defined(HAVE_GCC_GLOBAL_REGS)
+/* Hold the executor-globals pointer (the per-thread TSRM block base plus
+ * executor_globals_offset) in a callee-saved register across the interpreter
+ * loop, so EG() in the opcode handlers is a single register-relative load, just
+ * like NTS, with no TLS fetch and no offset reload. The register is set on VM
+ * entry and restored on exit. It is consulted only inside the generated handler
+ * file (see the EG() override right before that #include), where it is
+ * guaranteed live; every other translation unit, and the non-handler functions
+ * in this file, keep using the normal TLS fetch. Reserved here only; never in
+ * extensions. */
+#  define ZEND_VM_HOLD_EG_IN_REG 1
+#  pragma GCC diagnostic ignored "-Wvolatile-register-var"
+register void * volatile _zend_eg_reg __asm__("r13");
+#  pragma GCC diagnostic warning "-Wvolatile-register-var"
+#  define ZEND_VM_ENTER_LS_CACHE() \
+	void * volatile _zend_eg_saved = (void*)_zend_eg_reg; \
+	_zend_eg_reg = (char*)_tsrm_ls_cache + ZEND_EG_OFFSET
+#  define ZEND_VM_LEAVE_LS_CACHE() do { _zend_eg_reg = _zend_eg_saved; } while (0)
+# endif
+#endif
+#ifndef ZEND_VM_ENTER_LS_CACHE
+# define ZEND_VM_ENTER_LS_CACHE()
+# define ZEND_VM_LEAVE_LS_CACHE()
+#endif
+
 #include <stdio.h>
 #include <signal.h>
 
@@ -5912,6 +5946,15 @@ static zend_always_inline zend_execute_data *_zend_vm_stack_push_call_frame(uint
 
 /* This callback disables optimization of "vm_stack_data" variable in VM */
 ZEND_API void (ZEND_FASTCALL *zend_touch_vm_stack_data)(void *vm_stack_data) = NULL;
+
+/* From here on -- the interpreter loop and the opcode handlers -- read the
+ * executor globals through the register established on VM entry (see
+ * ZEND_VM_HOLD_EG_IN_REG above) instead of via TLS. This region is reached only
+ * from execute_ex, where the register is guaranteed live. */
+#ifdef ZEND_VM_HOLD_EG_IN_REG
+# undef EG
+# define EG(v) (((zend_executor_globals *)_zend_eg_reg)->v)
+#endif
 
 #include "zend_vm_execute.h"
 

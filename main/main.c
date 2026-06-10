@@ -2842,6 +2842,18 @@ PHPAPI bool php_tsrm_startup_ex(int expected_threads)
 {
 	bool ret = tsrm_startup(expected_threads, 1, 0, NULL);
 	php_reserve_tsrm_memory();
+	/* Reserve the fixed-offset prefix of the fast space for the hot engine
+	 * globals (compiler, executor, language scanner, alloc -- in that order),
+	 * which are placed there via ts_allocate_fast_id_at() so CG()/EG()/SCNG()/
+	 * AG() skip the runtime offset load. Reserving here, before any fast id is
+	 * allocated, keeps the bump-allocated fast resources after the prefix. The
+	 * size/order must match the ZEND_*_OFFSET layout (zend_globals.h +
+	 * zend_alloc.c); alloc_globals is sized via zend_mm_globals_size(). */
+	tsrm_reserve_fast_front(
+		TSRM_ALIGNED_SIZE(sizeof(zend_compiler_globals)) +
+		TSRM_ALIGNED_SIZE(sizeof(zend_executor_globals)) +
+		TSRM_ALIGNED_SIZE(sizeof(zend_php_scanner_globals)) +
+		TSRM_ALIGNED_SIZE(zend_mm_globals_size()));
 	(void)ts_resource(0);
 	return ret;
 }

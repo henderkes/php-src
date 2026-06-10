@@ -24,18 +24,11 @@
 # define TSRM_ASSERT(c)
 #endif
 
-typedef struct _tsrm_tls_entry tsrm_tls_entry;
+/* struct _tsrm_tls_entry / tsrm_tls_entry are defined in TSRM.h so that the
+ * offset of the first fast resource is a compile-time constant. */
 
 /* TSRMLS_CACHE_DEFINE; is already done in Zend, this is being always compiled statically. */
 TSRMLS_CACHE_EXTERN();
-
-struct _tsrm_tls_entry {
-	void **storage;
-	int count;
-	THREAD_T thread_id;
-	tsrm_tls_entry *next;
-};
-
 
 typedef struct {
 	size_t size;
@@ -319,6 +312,16 @@ TSRM_API void tsrm_reserve(size_t size)
 }/*}}}*/
 
 
+/* Reserve the compile-time-sized prefix of the fast space that holds the fixed
+ * (ts_allocate_fast_id_at) engine globals, so ordinary bump-allocated fast
+ * resources are placed after it regardless of allocation order. Must be called
+ * once, after tsrm_reserve() and before any fast id is allocated. */
+TSRM_API void tsrm_reserve_fast_front(size_t size)
+{/*{{{*/
+	tsrm_reserved_pos = TSRM_ALIGNED_SIZE(size);
+}/*}}}*/
+
+
 /* allocates a new fast thread-safe-resource id */
 TSRM_API ts_rsrc_id ts_allocate_fast_id(ts_rsrc_id *rsrc_id, size_t *offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
 {/*{{{*/
@@ -365,6 +368,65 @@ TSRM_API ts_rsrc_id ts_allocate_fast_id(ts_rsrc_id *rsrc_id, size_t *offset, siz
 	tsrm_mutex_unlock(tsmm_mutex);
 
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Successfully allocated new resource id %d", *rsrc_id));
+	return *rsrc_id;
+}/*}}}*/
+
+
+/* Allocate a fast resource id at a caller-chosen, compile-time-constant offset
+ * (a ZEND_*_OFFSET). The ordinary bump cursor is advanced past the slot so the
+ * bump-allocated fast resources never collide with a fixed one. The topmost
+ * fixed slot must be claimed before the first bump allocation -- it is:
+ * alloc_globals (start_memory_manager()) is the very first fast resource. */
+TSRM_API ts_rsrc_id ts_allocate_fast_id_at(ts_rsrc_id *rsrc_id, size_t *offset, size_t fixed_offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
+{/*{{{*/
+	size_t end;
+
+	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtaining a new fixed fast resource id at %zu, %d bytes", fixed_offset, size));
+
+	tsrm_mutex_lock(tsmm_mutex);
+
+	/* obtain a resource id */
+	*rsrc_id = TSRM_SHUFFLE_RSRC_ID(id_count++);
+	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtained resource id %d", *rsrc_id));
+
+	size = TSRM_ALIGNED_SIZE(size);
+	end = (fixed_offset - TSRM_FAST_RESERVED_BASE) + size;	/* relative to base */
+	if (end > tsrm_reserved_size) {
+		TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate space for fixed fast resource"));
+		*rsrc_id = 0;
+		*offset = 0;
+		tsrm_mutex_unlock(tsmm_mutex);
+		return 0;
+	}
+	/* keep ordinary (bump-allocated) fast resources past this fixed slot */
+	if (end > tsrm_reserved_pos) {
+		tsrm_reserved_pos = end;
+	}
+	*offset = fixed_offset;
+
+	/* store the new resource type in the resource sizes table */
+	if (resource_types_table_size < id_count) {
+		tsrm_resource_type *_tmp;
+		_tmp = (tsrm_resource_type *) realloc(resource_types_table, sizeof(tsrm_resource_type)*id_count);
+		if (!_tmp) {
+			TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate storage for resource"));
+			*rsrc_id = 0;
+			tsrm_mutex_unlock(tsmm_mutex);
+			return 0;
+		}
+		resource_types_table = _tmp;
+		resource_types_table_size = id_count;
+	}
+	resource_types_table[TSRM_UNSHUFFLE_RSRC_ID(*rsrc_id)].size = size;
+	resource_types_table[TSRM_UNSHUFFLE_RSRC_ID(*rsrc_id)].ctor = ctor;
+	resource_types_table[TSRM_UNSHUFFLE_RSRC_ID(*rsrc_id)].dtor = dtor;
+	resource_types_table[TSRM_UNSHUFFLE_RSRC_ID(*rsrc_id)].fast_offset = *offset;
+	resource_types_table[TSRM_UNSHUFFLE_RSRC_ID(*rsrc_id)].done = 0;
+
+	tsrm_update_active_threads();
+	tsrm_mutex_unlock(tsmm_mutex);
+
+	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Successfully allocated new fixed resource id %d", *rsrc_id));
 	return *rsrc_id;
 }/*}}}*/
 

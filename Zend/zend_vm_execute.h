@@ -361,7 +361,12 @@ static zend_vm_opcode_handler_func_t zend_vm_get_opcode_handler_func(uint8_t opc
 # if defined(__GNUC__) && defined(__i386__)
 #  define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "ebx")
 # elif defined(__GNUC__) && defined(__x86_64__)
-#  define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "rbx","r12","r13")
+#  ifdef ZEND_VM_HOLD_EG_IN_REG
+   /* r13 holds the executor-globals pointer for the engine VM and must not be clobbered */
+#   define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "rbx","r12")
+#  else
+#   define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "rbx","r12","r13")
+#  endif
 # elif defined(__GNUC__) && defined(__aarch64__)
 #  define HYBRID_JIT_GUARD() __asm__ __volatile__ (""::: "x19","x20","x21","x22","x23","x24","x25","x26")
 # else
@@ -380,8 +385,13 @@ static zend_vm_opcode_handler_func_t zend_vm_get_opcode_handler_func(uint8_t opc
 # define ZEND_OPCODE_HANDLER_ARGS_EX
 # define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU_EX
 #else
-# define ZEND_OPCODE_HANDLER_ARGS zend_execute_data *execute_data, const zend_op *opline
-# define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU execute_data, opline
+# ifdef ZTS
+#  define ZEND_OPCODE_HANDLER_ARGS zend_execute_data *execute_data, const zend_op *opline, void *_tsrm_ls_cache
+#  define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU execute_data, opline, _tsrm_ls_cache
+# else
+#  define ZEND_OPCODE_HANDLER_ARGS zend_execute_data *execute_data, const zend_op *opline
+#  define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU execute_data, opline
+# endif
 # define ZEND_OPCODE_HANDLER_ARGS_EX ZEND_OPCODE_HANDLER_ARGS, 
 # define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU_EX ZEND_OPCODE_HANDLER_ARGS_PASSTHRU, 
 #endif
@@ -53543,7 +53553,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV zend_interrupt(ZEN
 static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV zend_interrupt_TAILCALL(ZEND_OPCODE_HANDLER_ARGS);
 static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_NULL_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS);
 static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_HALT_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS);
-static zend_never_inline const zend_op *ZEND_OPCODE_HANDLER_CCONV zend_leave_helper_SPEC_TAILCALL(zend_execute_data *ex, const zend_op *opline);
+static zend_never_inline const zend_op *ZEND_OPCODE_HANDLER_CCONV zend_leave_helper_SPEC_TAILCALL(ZEND_OPCODE_HANDLER_ARGS);
 
 static const zend_op call_halt_op = {
     .handler = ZEND_HALT_TAILCALL_HANDLER,
@@ -106640,6 +106650,11 @@ fetch_this:
 #pragma pop_macro("ZEND_VM_CONTINUE")
 #endif /* ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL */
 
+#ifndef ZEND_VM_ENTER_LS_CACHE
+# define ZEND_VM_ENTER_LS_CACHE()
+# define ZEND_VM_LEAVE_LS_CACHE()
+#endif
+
 #if (ZEND_VM_KIND != ZEND_VM_KIND_CALL) && (ZEND_GCC_VERSION >= 4000) && !defined(__clang__)
 # pragma GCC push_options
 # pragma GCC optimize("no-gcse")
@@ -106657,6 +106672,8 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 #if defined(__GNUC__) && defined(__aarch64__)
 	__asm__ __volatile__ (""::: "v8","v9","v10","v11","v12","v13","v14","v15");
 #endif
+
+	ZEND_VM_ENTER_LS_CACHE();
 
 #if defined(ZEND_VM_IP_GLOBAL_REG) || defined(ZEND_VM_FP_GLOBAL_REG)
 	struct {
@@ -115551,6 +115568,7 @@ zend_leave_helper_SPEC_LABEL:
 #ifdef ZEND_VM_IP_GLOBAL_REG
 				opline = vm_stack_data.orig_opline;
 #endif
+				ZEND_VM_LEAVE_LS_CACHE();
 				return;
 			HYBRID_DEFAULT:
 				VM_TRACE(ZEND_NULL)
@@ -115592,7 +115610,10 @@ ZEND_API void zend_execute(zend_op_array *op_array, zval *return_value)
 	void *object_or_called_scope;
 	uint32_t call_info;
 
+	ZEND_VM_ENTER_LS_CACHE();
+
 	if (EG(exception) != NULL) {
+		ZEND_VM_LEAVE_LS_CACHE();
 		return;
 	}
 
@@ -115616,6 +115637,7 @@ ZEND_API void zend_execute(zend_op_array *op_array, zval *return_value)
 	zend_execute_ex(execute_data);
 	/* Observer end handlers are called from ZEND_RETURN */
 	zend_vm_stack_free_call_frame(execute_data);
+	ZEND_VM_LEAVE_LS_CACHE();
 }
 
 

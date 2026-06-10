@@ -75,6 +75,23 @@ typedef void (*ts_allocate_dtor)(void *);
 
 #define THREAD_HASH_OF(thr,ts)  (unsigned long)thr%(unsigned long)ts
 
+/* Per-thread resource block header. Fast resources live in the reserved space
+ * right after it. The definition is exposed here (rather than kept private to
+ * TSRM.c) so that TSRM_FAST_RESERVED_BASE -- the offset of the first fast
+ * resource -- is a compile-time constant, which lets the engine place the
+ * executor/compiler globals at compile-time-constant offsets (see
+ * ZEND_CG_OFFSET / ZEND_EG_OFFSET in zend_globals.h). */
+typedef struct _tsrm_tls_entry tsrm_tls_entry;
+struct _tsrm_tls_entry {
+	void **storage;
+	int count;
+	THREAD_T thread_id;
+	tsrm_tls_entry *next;
+};
+
+/* Offset of the first fast resource within a thread's resource block. */
+#define TSRM_FAST_RESERVED_BASE TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry))
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -93,6 +110,15 @@ TSRM_API ts_rsrc_id ts_allocate_id(ts_rsrc_id *rsrc_id, size_t size, ts_allocate
 /* Fast resource in reserved (pre-allocated) space */
 TSRM_API void tsrm_reserve(size_t size);
 TSRM_API ts_rsrc_id ts_allocate_fast_id(ts_rsrc_id *rsrc_id, size_t *offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor);
+
+/* Reserve the compile-time-sized prefix of the fast space for the fixed engine
+ * globals, then place each one at its compile-time-constant offset (a
+ * ZEND_*_OFFSET) with ts_allocate_fast_id_at(), so CG()/EG()/SCNG()/AG() skip
+ * the runtime offset load. tsrm_reserve_fast_front() must be called once (after
+ * tsrm_reserve(), before any fast id) so the bump-allocated fast resources are
+ * placed after the fixed prefix. */
+TSRM_API void tsrm_reserve_fast_front(size_t size);
+TSRM_API ts_rsrc_id ts_allocate_fast_id_at(ts_rsrc_id *rsrc_id, size_t *offset, size_t fixed_offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor);
 
 /* fetches the requested resource for the current thread */
 TSRM_API void *ts_resource_ex(ts_rsrc_id id, THREAD_T *th_id);

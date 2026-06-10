@@ -1964,7 +1964,18 @@ static void zend_jit_tailcall_handler(zend_jit_ctx *jit, ir_ref handler)
 	}
 #endif
 	if (GCC_GLOBAL_REGS || ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL) {
+#if defined(ZTS) && (ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL) && defined(IR_TARGET_X64)
+		/* TAILCALL opcode handlers take _tsrm_ls_cache as their 3rd preserve_none
+		 * argument (r14). The JIT keeps FP/IP in the first two arg registers but
+		 * not the cache, so pass all three explicitly via a preserve_none
+		 * prototype (cache from TLS); an arg-less tail call would leave the
+		 * handler's cache argument undefined. */
+		ir_ref proto = ir_proto_3(_ir_CTX, IR_CC_PRESERVE_NONE, IR_OPCODE_HANDLER_RET, IR_ADDR, IR_ADDR, IR_ADDR);
+		handler = ir_fold2(_ir_CTX, IR_OPT(IR_PROTO, IR_ADDR), handler, proto);
+		ir_TAILCALL_3(IR_OPCODE_HANDLER_RET, handler, jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 		ir_TAILCALL(IR_OPCODE_HANDLER_RET, handler);
+#endif
 	} else {
 		ir_TAILCALL_2(IR_ADDR, handler, jit_FP(jit), jit_IP(jit));
 	}
@@ -1985,7 +1996,11 @@ static int zend_jit_exception_handler_stub(zend_jit_ctx *jit)
 		if (GCC_GLOBAL_REGS || ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL) {
 			zend_jit_tailcall_handler(jit, ir_CONST_OPCODE_HANDLER_FUNC(handler));
 		} else {
+#if defined(ZTS)
+			ir_ref ref = ir_CALL_3(IR_ADDR, ir_CONST_OPCODE_HANDLER_FUNC(handler), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 			ir_ref ref = ir_CALL_2(IR_ADDR, ir_CONST_OPCODE_HANDLER_FUNC(handler), jit_FP(jit), jit_IP(jit));
+#endif
 			zend_jit_vm_enter(jit, ref);
 		}
 	}
@@ -2095,7 +2110,8 @@ static int zend_jit_interrupt_handler_stub(zend_jit_ctx *jit)
 static int zend_jit_leave_function_handler_stub(zend_jit_ctx *jit)
 {
 #if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
-	ir_TAILCALL(IR_OPCODE_HANDLER_RET, ir_CONST_OPCODE_HANDLER_FUNC(zend_jit_leave_func_helper_tailcall));
+	/* via zend_jit_tailcall_handler so the _tsrm_ls_cache argument is passed (ZTS) */
+	zend_jit_tailcall_handler(jit, ir_CONST_OPCODE_HANDLER_FUNC(zend_jit_leave_func_helper_tailcall));
 	return 1;
 #else
 	ir_ref call_info = ir_LOAD_U32(jit_EX(This.u1.type_info));
@@ -2111,7 +2127,13 @@ static int zend_jit_leave_function_handler_stub(zend_jit_ctx *jit)
 	} else if (GCC_GLOBAL_REGS) {
 		ir_TAILCALL_1(IR_VOID, ir_CONST_FC_FUNC(zend_jit_leave_nested_func_helper), call_info);
 	} else {
+#if defined(ZTS)
+		/* ZTS: pass _tsrm_ls_cache (3rd handler arg) before call_info, else the
+		 * helper reads EG() through call_info as a garbage cache pointer. */
+		ir_TAILCALL_4(IR_ADDR, ir_CONST_FC_FUNC(zend_jit_leave_nested_func_helper), jit_FP(jit), jit_IP(jit), jit_TLS(jit), call_info);
+#else
 		ir_TAILCALL_3(IR_ADDR, ir_CONST_FC_FUNC(zend_jit_leave_nested_func_helper), jit_FP(jit), jit_IP(jit), call_info);
+#endif
 	}
 
 	ir_IF_TRUE(if_top);
@@ -2122,7 +2144,11 @@ static int zend_jit_leave_function_handler_stub(zend_jit_ctx *jit)
 	} else if (GCC_GLOBAL_REGS) {
 		ir_TAILCALL_1(IR_VOID, ir_CONST_FC_FUNC(zend_jit_leave_top_func_helper), call_info);
 	} else {
+#if defined(ZTS)
+		ir_TAILCALL_4(IR_ADDR, ir_CONST_FC_FUNC(zend_jit_leave_top_func_helper), jit_FP(jit), jit_IP(jit), jit_TLS(jit), call_info);
+#else
 		ir_TAILCALL_3(IR_ADDR, ir_CONST_FC_FUNC(zend_jit_leave_top_func_helper), jit_FP(jit), jit_IP(jit), call_info);
+#endif
 	}
 
 	return 1;
@@ -2727,6 +2753,19 @@ static void zend_jit_init_ctx(zend_jit_ctx *jit, uint32_t flags)
 #endif
 
 	jit->ctx.fixed_regset = (1<<ZREG_FP) | (1<<ZREG_IP);
+#if defined(ZTS) && defined(IR_TARGET_X64)
+	/* The interpreter keeps the per-thread globals pointer in a callee-saved
+	 * register that JIT-ed code must not clobber across the VM<->JIT boundary:
+	 * r13 for the gcc/HYBRID executor-globals register variable (see
+	 * ZEND_VM_HOLD_EG_IN_REG in zend_execute.c); r14 for the clang/TAILCALL
+	 * preserve_none _tsrm_ls_cache argument (the handlers' 3rd parameter). Reserve
+	 * it so the register allocator leaves it alone. */
+# if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
+	jit->ctx.fixed_regset |= (1<<14); /* IR_REG_R14 */
+# elif ZEND_VM_KIND == ZEND_VM_KIND_HYBRID
+	jit->ctx.fixed_regset |= (1<<13); /* IR_REG_R13 */
+# endif
+#endif
 	if (!(flags & IR_FUNCTION)) {
 		jit->ctx.flags |= IR_NO_STACK_COMBINE;
 		if (ZEND_VM_KIND == ZEND_VM_KIND_CALL || ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL) {
@@ -4146,11 +4185,20 @@ static int zend_jit_handler(zend_jit_ctx *jit, const zend_op *opline, int may_th
 		ir_CALL(IR_VOID, ir_CONST_FUNC(handler));
 	} else if (ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL) {
 		zend_vm_opcode_handler_func_t handler = (zend_vm_opcode_handler_func_t)zend_get_opcode_handler_func(opline);
+#if defined(ZTS)
+		/* ZTS handlers take _tsrm_ls_cache as their 3rd argument; pass it from TLS */
+		ir_ref ip = ir_CALL_3(IR_ADDR, ir_CONST_FC_FUNC(handler), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 		ir_ref ip = ir_CALL_2(IR_ADDR, ir_CONST_FC_FUNC(handler), jit_FP(jit), jit_IP(jit));
+#endif
 		jit_STORE_IP(jit, ip);
 	} else {
 		zend_vm_opcode_handler_t handler = opline->handler;
+#if defined(ZTS)
+		ir_ref ip = ir_CALL_3(IR_ADDR, ir_CONST_FC_FUNC(handler), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 		ir_ref ip = ir_CALL_2(IR_ADDR, ir_CONST_FC_FUNC(handler), jit_FP(jit), jit_IP(jit));
+#endif
 		jit_STORE_IP(jit, ip);
 	}
 	if (may_throw) {
@@ -4209,10 +4257,18 @@ static int zend_jit_tail_handler(zend_jit_ctx *jit, const zend_op *opline)
 		  || opline->opcode == ZEND_MATCH_ERROR
 		  || opline->opcode == ZEND_THROW
 		  || opline->opcode == ZEND_VERIFY_NEVER_TYPE)) {
+#if defined(ZTS)
+			ir_ref ip = ir_CALL_3(IR_ADDR, ir_CONST_OPCODE_HANDLER_FUNC(handler), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 			ir_ref ip = ir_CALL_2(IR_ADDR, ir_CONST_OPCODE_HANDLER_FUNC(handler), jit_FP(jit), jit_IP(jit));
+#endif
 			zend_jit_vm_enter(jit, ip);
 		} else {
+#if defined(ZTS)
+			ir_TAILCALL_3(IR_ADDR, ir_CONST_OPCODE_HANDLER_FUNC(handler), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 			ir_TAILCALL_2(IR_ADDR, ir_CONST_OPCODE_HANDLER_FUNC(handler), jit_FP(jit), jit_IP(jit));
+#endif
 		}
 	}
 	if (jit->b >= 0) {
@@ -8002,7 +8058,8 @@ static int zend_jit_escape_if_undef(zend_jit_ctx *jit, int var, uint32_t flags, 
 	size_t offset = jit_extension->offset;
 	ir_ref ref = ir_CONST_FC_FUNC(ZEND_OP_TRACE_INFO((opline - 1), offset)->orig_handler);
 	if (GCC_GLOBAL_REGS || ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL) {
-		ir_TAILCALL(IR_OPCODE_HANDLER_RET, ref);
+		/* via zend_jit_tailcall_handler so the _tsrm_ls_cache argument is passed (ZTS) */
+		zend_jit_tailcall_handler(jit, ref);
 	} else {
 		ir_ref opline_ref = ir_CALL_2(IR_OPCODE_HANDLER_RET, ref, jit_FP(jit), jit_IP(jit));
 		zend_jit_vm_enter(jit, opline_ref);
@@ -11105,7 +11162,11 @@ static int zend_jit_leave_func(zend_jit_ctx         *jit,
 
 			ir_IF_TRUE_cold(if_slow);
 			if (!GCC_GLOBAL_REGS) {
+#if defined(ZTS)
+				ref = ir_CALL_3(IR_ADDR, ir_CONST_FC_FUNC(zend_jit_leave_func_helper), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 				ref = ir_CALL_2(IR_ADDR, ir_CONST_FC_FUNC(zend_jit_leave_func_helper), jit_FP(jit), jit_IP(jit));
+#endif
 			} else {
 				ir_CALL(IR_VOID, ir_CONST_FC_FUNC(zend_jit_leave_func_helper));
 			}
@@ -17119,7 +17180,14 @@ static int zend_jit_trace_handler(zend_jit_ctx *jit, const zend_op_array *op_arr
 	if (GCC_GLOBAL_REGS) {
 		ir_CALL(IR_VOID, ir_CONST_FUNC(handler));
 	} else {
+#if defined(ZTS)
+		/* ZTS handlers take _tsrm_ls_cache as their 3rd argument; pass it from
+		 * TLS (the JIT does not keep it in a register), or the handler reads
+		 * EG()/CG()/AG() through a garbage cache pointer. */
+		ref = ir_CALL_3(IR_ADDR, ir_CONST_FC_FUNC(handler), jit_FP(jit), jit_IP(jit), jit_TLS(jit));
+#else
 		ref = ir_CALL_2(IR_ADDR, ir_CONST_FC_FUNC(handler), jit_FP(jit), jit_IP(jit));
+#endif
 		if (opline->opcode == ZEND_RETURN ||
 		    opline->opcode == ZEND_RETURN_BY_REF ||
 		    opline->opcode == ZEND_DO_UCALL ||
