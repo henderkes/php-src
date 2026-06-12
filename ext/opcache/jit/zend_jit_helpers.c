@@ -1810,12 +1810,12 @@ static void ZEND_FASTCALL zend_jit_fast_assign_concat_helper(zval *op1, zval *op
 			GC_DELREF(Z_STR_P(op1));
 		}
 		result_str = zend_string_alloc(result_len, 0);
-		memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
+		zend_small_memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
 	} while(0);
 
 	GC_ADD_FLAGS(result_str, flags);
 	ZVAL_NEW_STR(op1, result_str);
-	memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
+	zend_small_memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
 	ZSTR_VAL(result_str)[result_len] = '\0';
 }
 
@@ -1834,11 +1834,11 @@ static void ZEND_FASTCALL zend_jit_fast_concat_helper(zval *result, zval *op1, z
 
 	result_str = zend_string_alloc(result_len, 0);
 	GC_ADD_FLAGS(result_str, flags);
-	memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
+	zend_small_memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
 
 	ZVAL_NEW_STR(result, result_str);
 
-	memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
+	zend_small_memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
 	ZSTR_VAL(result_str)[result_len] = '\0';
 }
 
@@ -1868,13 +1868,13 @@ static void ZEND_FASTCALL zend_jit_fast_concat_tmp_helper(zval *result, zval *op
 			GC_DELREF(op1_str);
 		}
 		result_str = zend_string_alloc(result_len, 0);
-		memcpy(ZSTR_VAL(result_str), ZSTR_VAL(op1_str), op1_len);
+		zend_small_memcpy(ZSTR_VAL(result_str), ZSTR_VAL(op1_str), op1_len);
 	} while (0);
 
 	GC_ADD_FLAGS(result_str, flags);
 	ZVAL_NEW_STR(result, result_str);
 
-	memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
+	zend_small_memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
 	ZSTR_VAL(result_str)[result_len] = '\0';
 }
 

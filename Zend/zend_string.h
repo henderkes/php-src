@@ -177,6 +177,46 @@ static zend_always_inline uint32_t zend_string_delref(zend_string *s)
 	return 1;
 }
 
+/* Copy that handles the short lengths dominating string concatenation inline,
+ * avoiding the call overhead (PLT stub + size dispatch) of an out-of-line libc
+ * memcpy. All loads/stores stay strictly within [ptr, ptr+len), so it is safe
+ * for sources that may border an unmapped page (e.g. interned strings in
+ * read-only data). Requires non-overlapping dst/src, like memcpy. */
+static zend_always_inline void zend_small_memcpy(char *dst, const char *src, size_t len)
+{
+	if (EXPECTED(len <= 32)) {
+		if (len >= 16) {
+			char a[16], b[16];
+			memcpy(a, src, 16);
+			memcpy(b, src + len - 16, 16);
+			memcpy(dst, a, 16);
+			memcpy(dst + len - 16, b, 16);
+		} else if (len >= 8) {
+			uint64_t a, b;
+			memcpy(&a, src, 8);
+			memcpy(&b, src + len - 8, 8);
+			memcpy(dst, &a, 8);
+			memcpy(dst + len - 8, &b, 8);
+		} else if (len >= 4) {
+			uint32_t a, b;
+			memcpy(&a, src, 4);
+			memcpy(&b, src + len - 4, 4);
+			memcpy(dst, &a, 4);
+			memcpy(dst + len - 4, &b, 4);
+		} else if (len >= 2) {
+			uint16_t a, b;
+			memcpy(&a, src, 2);
+			memcpy(&b, src + len - 2, 2);
+			memcpy(dst, &a, 2);
+			memcpy(dst + len - 2, &b, 2);
+		} else if (len == 1) {
+			*dst = *src;
+		}
+	} else {
+		memcpy(dst, src, len);
+	}
+}
+
 static zend_always_inline zend_string *zend_string_alloc(size_t len, bool persistent)
 {
 	zend_string *ret = (zend_string *)pemalloc(ZEND_MM_ALIGNED_SIZE(_ZSTR_STRUCT_SIZE(len)), persistent);
