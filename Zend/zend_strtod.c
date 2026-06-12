@@ -4029,15 +4029,8 @@ ZEND_API char *zend_dtoa(double dd, int mode, int ndigits, int *decpt, bool *sig
 				}
 #endif
 			for(i = 0;;) {
-				/* tr == (double)(Long)u exactly, but trunc() keeps the
-				 * serial per-digit dependency chain inside the FP unit
-				 * (one instruction on most targets) instead of a
-				 * trunc-to-int + back-to-double round-trip through the
-				 * integer register file; the digit extraction proper
-				 * moves off the critical path. */
-				tr = trunc(dval(&u));
-				L = (Long)tr;
-				dval(&u) -= tr;
+				L = dval(&u);
+				dval(&u) -= L;
 				*s++ = '0' + (int)L;
 				if (1. - dval(&u) < dval(&eps))
 					goto bump_up;
@@ -4054,7 +4047,12 @@ ZEND_API char *zend_dtoa(double dd, int mode, int ndigits, int *decpt, bool *sig
 			/* Generate ilim digits, then fix them up. */
 			dval(&eps) *= tens[ilim-1];
 			for(i = 1;; i++, dval(&u) *= 10.) {
-				/* See the leftright loop above for why trunc(). */
+				/* tr == (double)(Long)u exactly, but trunc() keeps the
+				 * serial per-digit dependency chain inside the FP unit
+				 * (one instruction on most targets) instead of a
+				 * trunc-to-int + back-to-double round-trip through the
+				 * integer register file; the digit extraction proper
+				 * moves off the critical path. */
 				tr = trunc(dval(&u));
 				L = (Long)tr;
 				if (!(dval(&u) -= tr))
@@ -4093,7 +4091,7 @@ ZEND_API char *zend_dtoa(double dd, int mode, int ndigits, int *decpt, bool *sig
 			goto one_digit;
 			}
 		for(i = 1;; i++, dval(&u) *= 10.) {
-			/* See the quick-path loops above for why trunc(). */
+			/* See the quick-path loop above for why trunc(). */
 			tr = trunc(dval(&u) / ds);
 			L = (Long)tr;
 			dval(&u) -= tr*ds;
