@@ -1783,6 +1783,45 @@ static void ZEND_FASTCALL zend_jit_assign_dim_op_helper(zval *container, zval *d
 	}
 }
 
+/* Inline copy for the short strings that dominate concatenation, avoiding the
+ * call overhead (PLT stub + size dispatch) of an out-of-line libc memcpy. All
+ * loads/stores stay strictly within [ptr, ptr+len), so this is safe for sources
+ * that may border an unmapped page (e.g. interned strings in read-only data). */
+static zend_always_inline void zend_jit_concat_memcpy(char *dst, const char *src, size_t len)
+{
+	if (EXPECTED(len <= 32)) {
+		if (len >= 16) {
+			char a[16], b[16];
+			memcpy(a, src, 16);
+			memcpy(b, src + len - 16, 16);
+			memcpy(dst, a, 16);
+			memcpy(dst + len - 16, b, 16);
+		} else if (len >= 8) {
+			uint64_t a, b;
+			memcpy(&a, src, 8);
+			memcpy(&b, src + len - 8, 8);
+			memcpy(dst, &a, 8);
+			memcpy(dst + len - 8, &b, 8);
+		} else if (len >= 4) {
+			uint32_t a, b;
+			memcpy(&a, src, 4);
+			memcpy(&b, src + len - 4, 4);
+			memcpy(dst, &a, 4);
+			memcpy(dst + len - 4, &b, 4);
+		} else if (len >= 2) {
+			uint16_t a, b;
+			memcpy(&a, src, 2);
+			memcpy(&b, src + len - 2, 2);
+			memcpy(dst, &a, 2);
+			memcpy(dst + len - 2, &b, 2);
+		} else if (len == 1) {
+			*dst = *src;
+		}
+	} else {
+		memcpy(dst, src, len);
+	}
+}
+
 static void ZEND_FASTCALL zend_jit_fast_assign_concat_helper(zval *op1, zval *op2)
 {
 	size_t op1_len = Z_STRLEN_P(op1);
@@ -1810,12 +1849,12 @@ static void ZEND_FASTCALL zend_jit_fast_assign_concat_helper(zval *op1, zval *op
 			GC_DELREF(Z_STR_P(op1));
 		}
 		result_str = zend_string_alloc(result_len, 0);
-		memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
+		zend_jit_concat_memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
 	} while(0);
 
 	GC_ADD_FLAGS(result_str, flags);
 	ZVAL_NEW_STR(op1, result_str);
-	memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
+	zend_jit_concat_memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
 	ZSTR_VAL(result_str)[result_len] = '\0';
 }
 
@@ -1834,11 +1873,11 @@ static void ZEND_FASTCALL zend_jit_fast_concat_helper(zval *result, zval *op1, z
 
 	result_str = zend_string_alloc(result_len, 0);
 	GC_ADD_FLAGS(result_str, flags);
-	memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
+	zend_jit_concat_memcpy(ZSTR_VAL(result_str), Z_STRVAL_P(op1), op1_len);
 
 	ZVAL_NEW_STR(result, result_str);
 
-	memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
+	zend_jit_concat_memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
 	ZSTR_VAL(result_str)[result_len] = '\0';
 }
 
@@ -1868,13 +1907,13 @@ static void ZEND_FASTCALL zend_jit_fast_concat_tmp_helper(zval *result, zval *op
 			GC_DELREF(op1_str);
 		}
 		result_str = zend_string_alloc(result_len, 0);
-		memcpy(ZSTR_VAL(result_str), ZSTR_VAL(op1_str), op1_len);
+		zend_jit_concat_memcpy(ZSTR_VAL(result_str), ZSTR_VAL(op1_str), op1_len);
 	} while (0);
 
 	GC_ADD_FLAGS(result_str, flags);
 	ZVAL_NEW_STR(result, result_str);
 
-	memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
+	zend_jit_concat_memcpy(ZSTR_VAL(result_str) + op1_len, Z_STRVAL_P(op2), op2_len);
 	ZSTR_VAL(result_str)[result_len] = '\0';
 }
 
