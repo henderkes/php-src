@@ -676,6 +676,14 @@ void zend_optimizer_compact_literals(zend_op_array *op_array, zend_optimizer_ctx
 						}
 					}
 					break;
+				case ZEND_RECV:
+					// monomorphic passing-ce cache slot for typed arguments
+					// (same condition as in zend_compile_params())
+					if (opline->op2.num != MAY_BE_ANY) {
+						opline->extended_value = cache_size;
+						cache_size += sizeof(void *);
+					}
+					break;
 				case ZEND_NEW:
 					if (opline->op1_type == IS_CONST) {
 						// op1 class

@@ -2698,6 +2698,12 @@ static void zend_emit_return_type_check(
 		}
 
 		opline = zend_emit_op(NULL, ZEND_VERIFY_RETURN_TYPE, expr, NULL);
+		/* Snapshot the return type mask so that the handler's fast path can
+		 * avoid the EX(func)->common.arg_info[-1].type load chain. The return
+		 * type of an op_array is immutable after this point (only
+		 * _ZEND_TYPE_ARENA_BIT may be toggled later, which is irrelevant to
+		 * the type-code bits and MAY_BE_NULL tested by the handler). */
+		opline->op2.num = ZEND_TYPE_FULL_MASK(type);
 		if (expr && expr->op_type == IS_CONST) {
 			opline->result_type = expr->op_type = IS_TMP_VAR;
 			opline->result.var = expr->u.op.var = get_temporary_variable();
@@ -8198,6 +8204,13 @@ static void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast, uint32
 		if (opcode == ZEND_RECV) {
 			opline->op2.num = type_ast ?
 				ZEND_TYPE_FULL_MASK(arg_info->type) : MAY_BE_ANY;
+			if (opline->op2.num != MAY_BE_ANY) {
+				/* Monomorphic passing-ce cache slot; only consulted by the
+				 * handler when the op2.num mask test fails, which cannot
+				 * happen for op2.num == MAY_BE_ANY (the same condition is
+				 * used in zend_optimizer_compact_literals()). */
+				opline->extended_value = zend_alloc_cache_slot();
+			}
 		}
 
 		if (is_promoted) {

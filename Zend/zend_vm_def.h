@@ -4476,7 +4476,6 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 #if !ZEND_VM_SPEC || (OP1_TYPE != IS_UNUSED)
 		USE_OPLINE
 		zval *retval_ref, *retval_ptr;
-		zend_arg_info *ret_info = EX(func)->common.arg_info - 1;
 		retval_ref = retval_ptr = GET_OP1_ZVAL_PTR_UNDEF(BP_VAR_R);
 
 		if (OP1_TYPE == IS_CONST) {
@@ -4491,7 +4490,12 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 			ZVAL_DEREF(retval_ptr);
 		}
 
-		if (EXPECTED(ZEND_TYPE_CONTAINS_CODE(ret_info->type, Z_TYPE_P(retval_ptr)))) {
+		/* opline->op2.num is a compile-time snapshot of
+		 * ZEND_TYPE_FULL_MASK(EX(func)->common.arg_info[-1].type) (only
+		 * _ZEND_TYPE_ARENA_BIT may diverge, which is not tested here), so this
+		 * is equivalent to ZEND_TYPE_CONTAINS_CODE(ret_info->type, ...)
+		 * without the EX(func)->arg_info[-1] dependent-load chain. */
+		if (EXPECTED(opline->op2.num & (1u << Z_TYPE_P(retval_ptr)))) {
 			ZEND_VM_NEXT_OPCODE();
 		}
 
@@ -4501,7 +4505,7 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 			if (UNEXPECTED(EG(exception))) {
 				HANDLE_EXCEPTION();
 			}
-			if (ZEND_TYPE_FULL_MASK(ret_info->type) & MAY_BE_NULL) {
+			if (opline->op2.num & MAY_BE_NULL) {
 				ZEND_VM_NEXT_OPCODE();
 			}
 		}
@@ -4522,8 +4526,9 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 			}
 		}
 
+		zend_arg_info *ret_info = EX(func)->common.arg_info - 1;
 		SAVE_OPLINE();
-		if (UNEXPECTED(!zend_check_type_slow(&ret_info->type, retval_ptr, ref, 1, 0))) {
+		if (UNEXPECTED(!zend_check_type_slow(&ret_info->type, retval_ptr, ref, 1, 0, NULL))) {
 			zend_verify_return_error(EX(func), retval_ptr);
 			HANDLE_EXCEPTION();
 		}
@@ -5716,7 +5721,9 @@ ZEND_VM_HELPER(zend_verify_recv_arg_type_helper, ANY, ANY, zval *op_1)
 	USE_OPLINE
 
 	SAVE_OPLINE();
-	if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), opline->op1.num, op_1))) {
+	/* opline->extended_value is allocated whenever op2.num != MAY_BE_ANY,
+	 * and this helper is only reachable when the op2.num mask test failed. */
+	if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), opline->op1.num, op_1, CACHE_ADDR(opline->extended_value)))) {
 		HANDLE_EXCEPTION();
 	}
 
@@ -5736,6 +5743,15 @@ ZEND_VM_HOT_HANDLER(63, ZEND_RECV, NUM, UNUSED)
 	param = EX_VAR(opline->result.var);
 
 	if (UNEXPECTED(!(opline->op2.num & (1u << Z_TYPE_P(param))))) {
+		/* Monomorphic passing-ce cache: the slot holds an instance ce that
+		 * previously passed this argument's pure single-class instanceof
+		 * check (written in zend_check_type_slow(); such a pass depends only
+		 * on the instance ce and the per-request-fixed target ce, so it can
+		 * never go stale within a request). */
+		if (Z_TYPE_P(param) == IS_OBJECT
+		 && EXPECTED(CACHED_PTR(opline->extended_value) == (void *)Z_OBJCE_P(param))) {
+			ZEND_VM_NEXT_OPCODE();
+		}
 		ZEND_VM_DISPATCH_TO_HELPER(zend_verify_recv_arg_type_helper, op_1, param);
 	}
 
@@ -5794,7 +5810,7 @@ ZEND_VM_HOT_HANDLER(64, ZEND_RECV_INIT, NUM, CONST)
 ZEND_VM_C_LABEL(recv_init_check_type):
 		if ((EX(func)->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) != 0) {
 			SAVE_OPLINE();
-			if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), arg_num, param))) {
+			if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), arg_num, param, NULL))) {
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -8917,7 +8933,7 @@ ZEND_VM_HOT_HANDLER(211, ZEND_TYPE_ASSERT, CONST, ANY, NUM)
 		uint16_t argno = opline->extended_value >> 16;
 		zend_arg_info *arginfo = &fbc->common.arg_info[argno - 1];
 
-		if (!zend_check_type(&arginfo->type, value, /* is_return_type */ false, /* is_internal */ true)) {
+		if (!zend_check_type(&arginfo->type, value, /* is_return_type */ false, /* is_internal */ true, /* cache_slot */ NULL)) {
 			const char *param_name = get_function_arg_name(fbc, argno);
 			zend_string *expected = zend_type_to_string(arginfo->type);
 			zend_type_error("%s(): Argument #%d%s%s%s must be of type %s, %s given", ZSTR_VAL(fbc->common.function_name), argno, param_name ? " ($" : "", param_name ? param_name : "", param_name ? ")" : "", ZSTR_VAL(expected), zend_zval_value_name(value));
