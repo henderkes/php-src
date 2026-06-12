@@ -3359,6 +3359,16 @@ static zend_result accel_post_startup(void)
 		accel_shared_globals = calloc(1, sizeof(zend_accel_shared_globals));
 	}
 
+	/* Fused inc/dec interpreter specializations may only be selected when the
+	 * JIT can never become enabled in this process (zend_jit_config() refuses
+	 * runtime enabling once JIT_G(enabled) is 0 after startup). The JIT trace
+	 * recorder must not execute handlers that step over multiple oplines. */
+#ifdef HAVE_JIT
+	zend_vm_incdec_fusion = !JIT_G(enabled);
+#else
+	zend_vm_incdec_fusion = true;
+#endif
+
 	/* opcache.file_cache_read_only should only be enabled when all script files are read-only */
 	int file_cache_access_mode = 0;
 

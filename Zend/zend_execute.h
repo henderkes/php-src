@@ -36,6 +36,10 @@ ZEND_API extern void (*zend_execute_internal)(zend_execute_data *execute_data, z
 /* The lc_name may be stack allocated! */
 ZEND_API extern zend_class_entry *(*zend_autoload)(zend_string *name, zend_string *lc_name);
 
+/* Allow selection of fused multi-opline interpreter handlers (incompatible
+ * with the JIT; see zend_vm_def.h ZEND_PRE_DEC_NOT_IDENTICAL_JMP). */
+ZEND_API extern bool zend_vm_incdec_fusion;
+
 void init_executor(void);
 void shutdown_executor(void);
 void shutdown_destructors(void);

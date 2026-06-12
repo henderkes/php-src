@@ -10332,6 +10332,52 @@ ZEND_VM_HOT_TYPE_SPEC_HANDLER(ZEND_PRE_INC, (op1_info == MAY_BE_LONG), ZEND_PRE_
 	ZEND_VM_NEXT_OPCODE();
 }
 
+/* Fused PRE_DEC + IS_NOT_IDENTICAL CV,CONST + JMPZ/JMPNZ. Selected only via the
+ * optimizer (zend_vm_set_opcode_handler_ex) for the exact opline triple
+ *   PRE_DEC CV (result unused); T = IS_NOT_IDENTICAL CV, CONST; JMPZ/JMPNZ T
+ * and only when zend_vm_incdec_fusion is set (i.e. the JIT cannot become
+ * enabled in this process; trace recording must never step over a multi-op
+ * handler). The fast path requires the CV to hold a LONG that does not
+ * underflow; every other case (undef, ref, string, double, bool, null,
+ * LONG_MIN) dispatches to zend_pre_dec_helper and continues with the
+ * unmodified IS_NOT_IDENTICAL and JMPZ/JMPNZ handlers of the following
+ * oplines, preserving warnings and exception semantics exactly. The middle
+ * and branch oplines keep their own handlers, so jumps targeting them from
+ * elsewhere behave as before. */
+ZEND_VM_HOT_TYPE_SPEC_HANDLER(ZEND_PRE_DEC, op->op1_type == IS_CV && op->result_type == IS_UNUSED && zend_vm_incdec_fusion && (op+1)->opcode == ZEND_IS_NOT_IDENTICAL && (op+1)->op1_type == IS_CV && (op+1)->op1.var == op->op1.var && (op+1)->op2_type == IS_CONST && ((op+1)->result_type & IS_TMP_VAR) && ((op+2)->opcode == ZEND_JMPNZ || (op+2)->opcode == ZEND_JMPZ) && (op+2)->op1_type == IS_TMP_VAR && (op+2)->op1.var == (op+1)->result.var && zend_user_opcodes[ZEND_IS_NOT_IDENTICAL] == ZEND_IS_NOT_IDENTICAL && zend_user_opcodes[ZEND_JMPNZ] == ZEND_JMPNZ && zend_user_opcodes[ZEND_JMPZ] == ZEND_JMPZ, ZEND_PRE_DEC_NOT_IDENTICAL_JMP, CV, ANY)
+{
+	USE_OPLINE
+	zval *var_ptr;
+
+	var_ptr = GET_OP1_ZVAL_PTR_PTR_UNDEF(BP_VAR_RW);
+
+	if (EXPECTED(Z_TYPE_P(var_ptr) == IS_LONG)
+	 && EXPECTED(Z_LVAL_P(var_ptr) != ZEND_LONG_MIN)) {
+		zend_long lval = Z_LVAL_P(var_ptr) - 1;
+		zval *cval = RT_CONSTANT(opline + 1, (opline + 1)->op2);
+		/* IS_NOT_IDENTICAL of the new LONG value against any constant */
+		bool result = (Z_TYPE_P(cval) != IS_LONG || Z_LVAL_P(cval) != lval);
+
+		Z_LVAL_P(var_ptr) = lval;
+		if (EXPECTED((opline + 2)->opcode == ZEND_JMPNZ)) {
+			if (EXPECTED(result)) {
+				ZEND_VM_SET_OPCODE(OP_JMP_ADDR(opline + 2, (opline + 2)->op2));
+			} else {
+				ZEND_VM_SET_NEXT_OPCODE(opline + 3);
+			}
+		} else {
+			if (result) {
+				ZEND_VM_SET_NEXT_OPCODE(opline + 3);
+			} else {
+				ZEND_VM_SET_OPCODE(OP_JMP_ADDR(opline + 2, (opline + 2)->op2));
+			}
+		}
+		ZEND_VM_CONTINUE();
+	}
+
+	ZEND_VM_DISPATCH_TO_HELPER(zend_pre_dec_helper);
+}
+
 ZEND_VM_HOT_TYPE_SPEC_HANDLER(ZEND_PRE_DEC, (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG), ZEND_PRE_DEC_LONG_NO_OVERFLOW, CV, ANY, SPEC(RETVAL))
 {
 	USE_OPLINE

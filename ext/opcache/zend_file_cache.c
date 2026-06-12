@@ -1540,6 +1540,11 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
 				UNSERIALIZE_ATTRIBUTES(Z_PTR_P(literal));
 			}
 			zend_deserialize_opcode_handler(opline);
+			if (UNEXPECTED(!zend_vm_incdec_fusion && opline->opcode == ZEND_PRE_DEC)) {
+				/* The blob may come from a process with the JIT disabled and
+				 * carry a fused multi-opline handler; re-select a plain one. */
+				zend_vm_set_opcode_handler(opline);
+			}
 			opline++;
 		}
 
