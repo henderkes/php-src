@@ -41162,6 +41162,18 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_P
 	ZEND_VM_NEXT_OPCODE();
 }
 
+/* Fused PRE_DEC + IS_NOT_IDENTICAL CV,CONST + JMPZ/JMPNZ. Selected only via the
+ * optimizer (zend_vm_set_opcode_handler_ex) for the exact opline triple
+ *   PRE_DEC CV (result unused); T = IS_NOT_IDENTICAL CV, CONST; JMPZ/JMPNZ T
+ * and only when zend_vm_incdec_fusion is set (i.e. the JIT cannot become
+ * enabled in this process; trace recording must never step over a multi-op
+ * handler). The fast path requires the CV to hold a LONG that does not
+ * underflow; every other case (undef, ref, string, double, bool, null,
+ * LONG_MIN) dispatches to zend_pre_dec_helper and continues with the
+ * unmodified IS_NOT_IDENTICAL and JMPZ/JMPNZ handlers of the following
+ * oplines, preserving warnings and exception semantics exactly. The middle
+ * and branch oplines keep their own handlers, so jumps targeting them from
+ * elsewhere behave as before. */
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -41173,6 +41185,52 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_P
 		ZVAL_COPY_VALUE(EX_VAR(opline->result.var), var_ptr);
 	}
 	ZEND_VM_NEXT_OPCODE();
+}
+
+/* Fused PRE_DEC + IS_NOT_IDENTICAL CV,CONST + JMPZ/JMPNZ. Selected only via the
+ * optimizer (zend_vm_set_opcode_handler_ex) for the exact opline triple
+ *   PRE_DEC CV (result unused); T = IS_NOT_IDENTICAL CV, CONST; JMPZ/JMPNZ T
+ * and only when zend_vm_incdec_fusion is set (i.e. the JIT cannot become
+ * enabled in this process; trace recording must never step over a multi-op
+ * handler). The fast path requires the CV to hold a LONG that does not
+ * underflow; every other case (undef, ref, string, double, bool, null,
+ * LONG_MIN) dispatches to zend_pre_dec_helper and continues with the
+ * unmodified IS_NOT_IDENTICAL and JMPZ/JMPNZ handlers of the following
+ * oplines, preserving warnings and exception semantics exactly. The middle
+ * and branch oplines keep their own handlers, so jumps targeting them from
+ * elsewhere behave as before. */
+static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zval *var_ptr;
+
+	var_ptr = EX_VAR(opline->op1.var);
+
+	if (EXPECTED(Z_TYPE_P(var_ptr) == IS_LONG)
+	 && EXPECTED(Z_LVAL_P(var_ptr) != ZEND_LONG_MIN)) {
+		zend_long lval = Z_LVAL_P(var_ptr) - 1;
+		zval *cval = RT_CONSTANT(opline + 1, (opline + 1)->op2);
+		/* IS_NOT_IDENTICAL of the new LONG value against any constant */
+		bool result = (Z_TYPE_P(cval) != IS_LONG || Z_LVAL_P(cval) != lval);
+
+		Z_LVAL_P(var_ptr) = lval;
+		if (EXPECTED((opline + 2)->opcode == ZEND_JMPNZ)) {
+			if (EXPECTED(result)) {
+				ZEND_VM_SET_OPCODE(OP_JMP_ADDR(opline + 2, (opline + 2)->op2));
+			} else {
+				ZEND_VM_SET_NEXT_OPCODE(opline + 3);
+			}
+		} else {
+			if (result) {
+				ZEND_VM_SET_NEXT_OPCODE(opline + 3);
+			} else {
+				ZEND_VM_SET_OPCODE(OP_JMP_ADDR(opline + 2, (opline + 2)->op2));
+			}
+		}
+		ZEND_VM_CONTINUE();
+	}
+
+	ZEND_VM_TAIL_CALL(zend_pre_dec_helper_SPEC_CV(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU));
 }
 
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
@@ -94108,6 +94166,18 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_PRE_IN
 	ZEND_VM_NEXT_OPCODE();
 }
 
+/* Fused PRE_DEC + IS_NOT_IDENTICAL CV,CONST + JMPZ/JMPNZ. Selected only via the
+ * optimizer (zend_vm_set_opcode_handler_ex) for the exact opline triple
+ *   PRE_DEC CV (result unused); T = IS_NOT_IDENTICAL CV, CONST; JMPZ/JMPNZ T
+ * and only when zend_vm_incdec_fusion is set (i.e. the JIT cannot become
+ * enabled in this process; trace recording must never step over a multi-op
+ * handler). The fast path requires the CV to hold a LONG that does not
+ * underflow; every other case (undef, ref, string, double, bool, null,
+ * LONG_MIN) dispatches to zend_pre_dec_helper and continues with the
+ * unmodified IS_NOT_IDENTICAL and JMPZ/JMPNZ handlers of the following
+ * oplines, preserving warnings and exception semantics exactly. The middle
+ * and branch oplines keep their own handlers, so jumps targeting them from
+ * elsewhere behave as before. */
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
@@ -94119,6 +94189,52 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_PRE_IN
 		ZVAL_COPY_VALUE(EX_VAR(opline->result.var), var_ptr);
 	}
 	ZEND_VM_NEXT_OPCODE();
+}
+
+/* Fused PRE_DEC + IS_NOT_IDENTICAL CV,CONST + JMPZ/JMPNZ. Selected only via the
+ * optimizer (zend_vm_set_opcode_handler_ex) for the exact opline triple
+ *   PRE_DEC CV (result unused); T = IS_NOT_IDENTICAL CV, CONST; JMPZ/JMPNZ T
+ * and only when zend_vm_incdec_fusion is set (i.e. the JIT cannot become
+ * enabled in this process; trace recording must never step over a multi-op
+ * handler). The fast path requires the CV to hold a LONG that does not
+ * underflow; every other case (undef, ref, string, double, bool, null,
+ * LONG_MIN) dispatches to zend_pre_dec_helper and continues with the
+ * unmodified IS_NOT_IDENTICAL and JMPZ/JMPNZ handlers of the following
+ * oplines, preserving warnings and exception semantics exactly. The middle
+ * and branch oplines keep their own handlers, so jumps targeting them from
+ * elsewhere behave as before. */
+static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zval *var_ptr;
+
+	var_ptr = EX_VAR(opline->op1.var);
+
+	if (EXPECTED(Z_TYPE_P(var_ptr) == IS_LONG)
+	 && EXPECTED(Z_LVAL_P(var_ptr) != ZEND_LONG_MIN)) {
+		zend_long lval = Z_LVAL_P(var_ptr) - 1;
+		zval *cval = RT_CONSTANT(opline + 1, (opline + 1)->op2);
+		/* IS_NOT_IDENTICAL of the new LONG value against any constant */
+		bool result = (Z_TYPE_P(cval) != IS_LONG || Z_LVAL_P(cval) != lval);
+
+		Z_LVAL_P(var_ptr) = lval;
+		if (EXPECTED((opline + 2)->opcode == ZEND_JMPNZ)) {
+			if (EXPECTED(result)) {
+				ZEND_VM_SET_OPCODE(OP_JMP_ADDR(opline + 2, (opline + 2)->op2));
+			} else {
+				ZEND_VM_SET_NEXT_OPCODE(opline + 3);
+			}
+		} else {
+			if (result) {
+				ZEND_VM_SET_NEXT_OPCODE(opline + 3);
+			} else {
+				ZEND_VM_SET_OPCODE(OP_JMP_ADDR(opline + 2, (opline + 2)->op2));
+			}
+		}
+		ZEND_VM_CONTINUE();
+	}
+
+	ZEND_VM_TAIL_CALL(zend_pre_dec_helper_SPEC_CV_TAILCALL(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU));
 }
 
 static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
@@ -111168,6 +111284,7 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 			(void*)&&ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_LABEL,
 			(void*)&&ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED_LABEL,
 			(void*)&&ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_LABEL,
+			(void*)&&ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV_LABEL,
 			(void*)&&ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_LABEL,
 			(void*)&&ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_LABEL,
 			(void*)&&ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED_LABEL,
@@ -115615,6 +115732,11 @@ zend_leave_helper_SPEC_LABEL:
 				VM_TRACE(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED)
 				ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
 				VM_TRACE_OP_END(ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV):
+				VM_TRACE(ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV)
+				ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED):
 				VM_TRACE(ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED)
@@ -120366,6 +120488,7 @@ void zend_vm_init(void)
 		ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_HANDLER,
 		ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED_HANDLER,
 		ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_HANDLER,
+		ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV_HANDLER,
 		ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_HANDLER,
 		ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_HANDLER,
 		ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED_HANDLER,
@@ -123964,6 +124087,7 @@ void zend_vm_init(void)
 		ZEND_PRE_INC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_TAILCALL_HANDLER,
 		ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_UNUSED_TAILCALL_HANDLER,
 		ZEND_PRE_INC_LONG_SPEC_CV_RETVAL_USED_TAILCALL_HANDLER,
+		ZEND_PRE_DEC_NOT_IDENTICAL_JMP_SPEC_CV_TAILCALL_HANDLER,
 		ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_UNUSED_TAILCALL_HANDLER,
 		ZEND_PRE_DEC_LONG_NO_OVERFLOW_SPEC_CV_RETVAL_USED_TAILCALL_HANDLER,
 		ZEND_PRE_DEC_LONG_SPEC_CV_RETVAL_UNUSED_TAILCALL_HANDLER,
@@ -124079,7 +124203,7 @@ void zend_vm_init(void)
 		1355,
 		1356 | SPEC_RULE_OP1,
 		1361 | SPEC_RULE_OP1,
-		3594,
+		3595,
 		1366 | SPEC_RULE_OP1,
 		1371 | SPEC_RULE_OP1,
 		1376 | SPEC_RULE_OP2,
@@ -124113,7 +124237,7 @@ void zend_vm_init(void)
 		1659 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
 		1684 | SPEC_RULE_OP1,
 		1689,
-		3594,
+		3595,
 		1690 | SPEC_RULE_OP1,
 		1695 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
 		1720 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
@@ -124246,50 +124370,50 @@ void zend_vm_init(void)
 		2656,
 		2657,
 		2658,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
-		3594,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
+		3595,
 	};
 #if 0
 #elif (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID)
@@ -124643,11 +124767,11 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 			break;
 		case ZEND_QM_ASSIGN:
 			if (op1_info == MAY_BE_LONG) {
-				spec = 3540 | SPEC_RULE_OP1;
+				spec = 3541 | SPEC_RULE_OP1;
 			} else if (op1_info == MAY_BE_DOUBLE) {
-				spec = 3545 | SPEC_RULE_OP1;
+				spec = 3546 | SPEC_RULE_OP1;
 			} else if ((op->op1_type == IS_CONST) ? !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1)) : (!(op1_info & ((MAY_BE_ANY|MAY_BE_UNDEF)-(MAY_BE_NULL|MAY_BE_FALSE|MAY_BE_TRUE|MAY_BE_LONG|MAY_BE_DOUBLE))))) {
-				spec = 3550 | SPEC_RULE_OP1;
+				spec = 3551 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_PRE_INC:
@@ -124658,24 +124782,26 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 			}
 			break;
 		case ZEND_PRE_DEC:
-			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3532 | SPEC_RULE_RETVAL;
+			if (op->op1_type == IS_CV && op->result_type == IS_UNUSED && zend_vm_incdec_fusion && (op+1)->opcode == ZEND_IS_NOT_IDENTICAL && (op+1)->op1_type == IS_CV && (op+1)->op1.var == op->op1.var && (op+1)->op2_type == IS_CONST && ((op+1)->result_type & IS_TMP_VAR) && ((op+2)->opcode == ZEND_JMPNZ || (op+2)->opcode == ZEND_JMPZ) && (op+2)->op1_type == IS_TMP_VAR && (op+2)->op1.var == (op+1)->result.var && zend_user_opcodes[ZEND_IS_NOT_IDENTICAL] == ZEND_IS_NOT_IDENTICAL && zend_user_opcodes[ZEND_JMPNZ] == ZEND_JMPNZ && zend_user_opcodes[ZEND_JMPZ] == ZEND_JMPZ) {
+				spec = 3532;
+			} else if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
+				spec = 3533 | SPEC_RULE_RETVAL;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3534 | SPEC_RULE_RETVAL;
+				spec = 3535 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_POST_INC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3536;
-			} else if (op1_info == MAY_BE_LONG) {
 				spec = 3537;
+			} else if (op1_info == MAY_BE_LONG) {
+				spec = 3538;
 			}
 			break;
 		case ZEND_POST_DEC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3538;
-			} else if (op1_info == MAY_BE_LONG) {
 				spec = 3539;
+			} else if (op1_info == MAY_BE_LONG) {
+				spec = 3540;
 			}
 			break;
 		case ZEND_JMP:
@@ -124695,17 +124821,17 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 			break;
 		case ZEND_SEND_VAL:
 			if (op->op1_type == IS_CONST && op->op2_type == IS_UNUSED && !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1))) {
-				spec = 3590;
+				spec = 3591;
 			}
 			break;
 		case ZEND_SEND_VAR_EX:
 			if (op->op2_type == IS_UNUSED && op->op2.num <= MAX_ARG_FLAG_NUM && (op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) == 0) {
-				spec = 3585 | SPEC_RULE_OP1;
+				spec = 3586 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_FE_FETCH_R:
 			if (op->op2_type == IS_CV && (op1_info & (MAY_BE_ANY|MAY_BE_REF)) == MAY_BE_ARRAY) {
-				spec = 3592 | SPEC_RULE_RETVAL;
+				spec = 3593 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_FETCH_DIM_R:
@@ -124713,17 +124839,17 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3555 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 3556 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			}
 			break;
 		case ZEND_SEND_VAL_EX:
 			if (op->op2_type == IS_UNUSED && op->op2.num <= MAX_ARG_FLAG_NUM && op->op1_type == IS_CONST && !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1))) {
-				spec = 3591;
+				spec = 3592;
 			}
 			break;
 		case ZEND_SEND_VAR:
 			if (op->op2_type == IS_UNUSED && (op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) == 0) {
-				spec = 3580 | SPEC_RULE_OP1;
+				spec = 3581 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_COUNT:

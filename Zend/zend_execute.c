@@ -131,6 +131,12 @@ typedef int (ZEND_FASTCALL *incdec_t)(zval *);
 
 #define RETURN_VALUE_USED(opline) ((opline)->result_type != IS_UNUSED)
 
+/* Permits selection of the fused inc/dec + compare + branch interpreter
+ * specializations. Off by default; opcache enables it at startup when the
+ * JIT can never become enabled in this process (the JIT trace recorder must
+ * not execute handlers that step over multiple oplines). */
+ZEND_API bool zend_vm_incdec_fusion = false;
+
 static ZEND_FUNCTION(pass)
 {
 }
