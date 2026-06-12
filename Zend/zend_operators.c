@@ -2140,7 +2140,7 @@ has_op2_string:;
 			}
 		} else {
 			result_str = zend_string_alloc(result_len, 0);
-			memcpy(ZSTR_VAL(result_str), ZSTR_VAL(op1_string), op1_len);
+			zend_small_memcpy(ZSTR_VAL(result_str), ZSTR_VAL(op1_string), op1_len);
 			if (result == orig_op1) {
 				i_zval_ptr_dtor(result);
 			}
@@ -2148,7 +2148,7 @@ has_op2_string:;
 		GC_ADD_FLAGS(result_str, flags);
 
 		ZVAL_NEW_STR(result, result_str);
-		memcpy(ZSTR_VAL(result_str) + op1_len, ZSTR_VAL(op2_string), op2_len);
+		zend_small_memcpy(ZSTR_VAL(result_str) + op1_len, ZSTR_VAL(op2_string), op2_len);
 		ZSTR_VAL(result_str)[result_len] = '\0';
 	}
 
