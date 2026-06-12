@@ -4476,7 +4476,6 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 #if !ZEND_VM_SPEC || (OP1_TYPE != IS_UNUSED)
 		USE_OPLINE
 		zval *retval_ref, *retval_ptr;
-		zend_arg_info *ret_info = EX(func)->common.arg_info - 1;
 		retval_ref = retval_ptr = GET_OP1_ZVAL_PTR_UNDEF(BP_VAR_R);
 
 		if (OP1_TYPE == IS_CONST) {
@@ -4491,7 +4490,12 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 			ZVAL_DEREF(retval_ptr);
 		}
 
-		if (EXPECTED(ZEND_TYPE_CONTAINS_CODE(ret_info->type, Z_TYPE_P(retval_ptr)))) {
+		/* opline->op2.num is a compile-time snapshot of
+		 * ZEND_TYPE_FULL_MASK(EX(func)->common.arg_info[-1].type) (only
+		 * _ZEND_TYPE_ARENA_BIT may diverge, which is not tested here), so this
+		 * is equivalent to ZEND_TYPE_CONTAINS_CODE(ret_info->type, ...)
+		 * without the EX(func)->arg_info[-1] dependent-load chain. */
+		if (EXPECTED(opline->op2.num & (1u << Z_TYPE_P(retval_ptr)))) {
 			ZEND_VM_NEXT_OPCODE();
 		}
 
@@ -4501,7 +4505,7 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 			if (UNEXPECTED(EG(exception))) {
 				HANDLE_EXCEPTION();
 			}
-			if (ZEND_TYPE_FULL_MASK(ret_info->type) & MAY_BE_NULL) {
+			if (opline->op2.num & MAY_BE_NULL) {
 				ZEND_VM_NEXT_OPCODE();
 			}
 		}
@@ -4522,6 +4526,7 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 			}
 		}
 
+		zend_arg_info *ret_info = EX(func)->common.arg_info - 1;
 		SAVE_OPLINE();
 		if (UNEXPECTED(!zend_check_type_slow(&ret_info->type, retval_ptr, ref, 1, 0))) {
 			zend_verify_return_error(EX(func), retval_ptr);
