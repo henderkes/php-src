@@ -8204,6 +8204,13 @@ static void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast, uint32
 		if (opcode == ZEND_RECV) {
 			opline->op2.num = type_ast ?
 				ZEND_TYPE_FULL_MASK(arg_info->type) : MAY_BE_ANY;
+			if (opline->op2.num != MAY_BE_ANY) {
+				/* Monomorphic passing-ce cache slot; only consulted by the
+				 * handler when the op2.num mask test fails, which cannot
+				 * happen for op2.num == MAY_BE_ANY (the same condition is
+				 * used in zend_optimizer_compact_literals()). */
+				opline->extended_value = zend_alloc_cache_slot();
+			}
 		}
 
 		if (is_promoted) {

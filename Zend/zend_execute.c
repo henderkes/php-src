@@ -1153,7 +1153,7 @@ static bool zend_check_intersection_type_from_list(
 
 static zend_always_inline bool zend_check_type_slow(
 		const zend_type *type, zval *arg, const zend_reference *ref,
-		bool is_return_type, bool is_internal)
+		bool is_return_type, bool is_internal, void **cache_slot)
 {
 	if (ZEND_TYPE_IS_COMPLEX(*type) && EXPECTED(Z_TYPE_P(arg) == IS_OBJECT)) {
 		zend_class_entry *ce;
@@ -1182,6 +1182,19 @@ static zend_always_inline bool zend_check_type_slow(
 			/* If we have a CE we check if it satisfies the type constraint,
 			 * otherwise it will check if a standard type satisfies it. */
 			if (ce && instanceof_function(Z_OBJCE_P(arg), ce)) {
+				if (cache_slot && ZSTR_HAS_CE_CACHE(ZEND_TYPE_NAME(*type))) {
+					/* Record the passing instance ce for the ZEND_RECV fast
+					 * path. Only sound for this pure instanceof success: it
+					 * depends solely on the instance ce's hierarchy
+					 * (immutable once linked) and the type-name -> ce
+					 * binding, which for ce-cached names is scope-independent
+					 * and fixed for the rest of the request ("self"/"parent"
+					 * never carry a ce cache, see zend_alloc_ce_cache()).
+					 * Passes via MAY_BE_CALLABLE/MAY_BE_STATIC, union or
+					 * intersection lists, or scalar coercion are never
+					 * cached. */
+					*cache_slot = (void *)Z_OBJCE_P(arg);
+				}
 				return true;
 			}
 		}
@@ -1215,7 +1228,8 @@ static zend_always_inline bool zend_check_type_slow(
 }
 
 static zend_always_inline bool zend_check_type(
-		const zend_type *type, zval *arg, bool is_return_type, bool is_internal)
+		const zend_type *type, zval *arg, bool is_return_type, bool is_internal,
+		void **cache_slot)
 {
 	const zend_reference *ref = NULL;
 	ZEND_ASSERT(ZEND_TYPE_IS_SET(*type));
@@ -1229,17 +1243,17 @@ static zend_always_inline bool zend_check_type(
 		return 1;
 	}
 
-	return zend_check_type_slow(type, arg, ref, is_return_type, is_internal);
+	return zend_check_type_slow(type, arg, ref, is_return_type, is_internal, cache_slot);
 }
 
 ZEND_API bool zend_check_user_type_slow(
 		const zend_type *type, zval *arg, const zend_reference *ref, bool is_return_type)
 {
 	return zend_check_type_slow(
-		type, arg, ref, is_return_type, /* is_internal */ false);
+		type, arg, ref, is_return_type, /* is_internal */ false, /* cache_slot */ NULL);
 }
 
-static zend_always_inline bool zend_verify_recv_arg_type(const zend_function *zf, uint32_t arg_num, zval *arg)
+static zend_always_inline bool zend_verify_recv_arg_type(const zend_function *zf, uint32_t arg_num, zval *arg, void **cache_slot)
 {
 	const zend_arg_info *cur_arg_info;
 
@@ -1247,7 +1261,7 @@ static zend_always_inline bool zend_verify_recv_arg_type(const zend_function *zf
 	cur_arg_info = &zf->common.arg_info[arg_num-1];
 
 	if (ZEND_TYPE_IS_SET(cur_arg_info->type)
-			&& UNEXPECTED(!zend_check_type(&cur_arg_info->type, arg, false, false))) {
+			&& UNEXPECTED(!zend_check_type(&cur_arg_info->type, arg, false, false, cache_slot))) {
 		zend_verify_arg_error(zf, cur_arg_info, arg_num, arg);
 		return 0;
 	}
@@ -1259,7 +1273,7 @@ static zend_always_inline bool zend_verify_variadic_arg_type(
 		const zend_function *zf, const zend_arg_info *arg_info, uint32_t arg_num, zval *arg)
 {
 	ZEND_ASSERT(ZEND_TYPE_IS_SET(arg_info->type));
-	if (UNEXPECTED(!zend_check_type(&arg_info->type, arg, false, false))) {
+	if (UNEXPECTED(!zend_check_type(&arg_info->type, arg, false, false, /* cache_slot */ NULL))) {
 		zend_verify_arg_error(zf, arg_info, arg_num, arg);
 		return 0;
 	}
@@ -1284,7 +1298,7 @@ static zend_never_inline ZEND_ATTRIBUTE_UNUSED bool zend_verify_internal_arg_typ
 		}
 
 		if (ZEND_TYPE_IS_SET(cur_arg_info->type)
-				&& UNEXPECTED(!zend_check_type(&cur_arg_info->type, arg, false, /* is_internal */ true))) {
+				&& UNEXPECTED(!zend_check_type(&cur_arg_info->type, arg, false, /* is_internal */ true, /* cache_slot */ NULL))) {
 			return 0;
 		}
 		arg++;
@@ -1491,7 +1505,7 @@ ZEND_API bool zend_verify_internal_return_type(const zend_function *zf, zval *re
 		return 1;
 	}
 
-	if (UNEXPECTED(!zend_check_type(&ret_info->type, ret, true, /* is_internal */ true))) {
+	if (UNEXPECTED(!zend_check_type(&ret_info->type, ret, true, /* is_internal */ true, /* cache_slot */ NULL))) {
 		zend_verify_internal_return_error(zf, ret);
 		return 0;
 	}

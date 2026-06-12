@@ -4528,7 +4528,7 @@ ZEND_VM_COLD_CONST_HANDLER(124, ZEND_VERIFY_RETURN_TYPE, CONST|TMP|VAR|UNUSED|CV
 
 		zend_arg_info *ret_info = EX(func)->common.arg_info - 1;
 		SAVE_OPLINE();
-		if (UNEXPECTED(!zend_check_type_slow(&ret_info->type, retval_ptr, ref, 1, 0))) {
+		if (UNEXPECTED(!zend_check_type_slow(&ret_info->type, retval_ptr, ref, 1, 0, NULL))) {
 			zend_verify_return_error(EX(func), retval_ptr);
 			HANDLE_EXCEPTION();
 		}
@@ -5721,7 +5721,9 @@ ZEND_VM_HELPER(zend_verify_recv_arg_type_helper, ANY, ANY, zval *op_1)
 	USE_OPLINE
 
 	SAVE_OPLINE();
-	if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), opline->op1.num, op_1))) {
+	/* opline->extended_value is allocated whenever op2.num != MAY_BE_ANY,
+	 * and this helper is only reachable when the op2.num mask test failed. */
+	if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), opline->op1.num, op_1, CACHE_ADDR(opline->extended_value)))) {
 		HANDLE_EXCEPTION();
 	}
 
@@ -5741,6 +5743,15 @@ ZEND_VM_HOT_HANDLER(63, ZEND_RECV, NUM, UNUSED)
 	param = EX_VAR(opline->result.var);
 
 	if (UNEXPECTED(!(opline->op2.num & (1u << Z_TYPE_P(param))))) {
+		/* Monomorphic passing-ce cache: the slot holds an instance ce that
+		 * previously passed this argument's pure single-class instanceof
+		 * check (written in zend_check_type_slow(); such a pass depends only
+		 * on the instance ce and the per-request-fixed target ce, so it can
+		 * never go stale within a request). */
+		if (Z_TYPE_P(param) == IS_OBJECT
+		 && EXPECTED(CACHED_PTR(opline->extended_value) == (void *)Z_OBJCE_P(param))) {
+			ZEND_VM_NEXT_OPCODE();
+		}
 		ZEND_VM_DISPATCH_TO_HELPER(zend_verify_recv_arg_type_helper, op_1, param);
 	}
 
@@ -5799,7 +5810,7 @@ ZEND_VM_HOT_HANDLER(64, ZEND_RECV_INIT, NUM, CONST)
 ZEND_VM_C_LABEL(recv_init_check_type):
 		if ((EX(func)->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) != 0) {
 			SAVE_OPLINE();
-			if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), arg_num, param))) {
+			if (UNEXPECTED(!zend_verify_recv_arg_type(EX(func), arg_num, param, NULL))) {
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -8922,7 +8933,7 @@ ZEND_VM_HOT_HANDLER(211, ZEND_TYPE_ASSERT, CONST, ANY, NUM)
 		uint16_t argno = opline->extended_value >> 16;
 		zend_arg_info *arginfo = &fbc->common.arg_info[argno - 1];
 
-		if (!zend_check_type(&arginfo->type, value, /* is_return_type */ false, /* is_internal */ true)) {
+		if (!zend_check_type(&arginfo->type, value, /* is_return_type */ false, /* is_internal */ true, /* cache_slot */ NULL)) {
 			const char *param_name = get_function_arg_name(fbc, argno);
 			zend_string *expected = zend_type_to_string(arginfo->type);
 			zend_type_error("%s(): Argument #%d%s%s%s must be of type %s, %s given", ZSTR_VAL(fbc->common.function_name), argno, param_name ? " ($" : "", param_name ? param_name : "", param_name ? ")" : "", ZSTR_VAL(expected), zend_zval_value_name(value));
