@@ -1505,6 +1505,35 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		efree_size(ref, sizeof(zend_reference));		\
 	} while (0)
 
+#ifdef HAVE_PRESERVE_NONE
+/* preserve_none / tailcall VM build (clang). Load the source value word and type_info
+ * into locals *before* the refcount increment, then store from those locals.
+ * Functionally byte-identical to the generic form below (which reads the source through
+ * ZVAL_COPY_VALUE() after the ADDREF), but it lets clang keep the source value/type_info
+ * in registers across the GC_ADDREF store instead of reloading them: the refcount store
+ * may-alias the source zval and clang does not hoist the loads, so it reloaded type_info
+ * up to 3x and the value word 2x on the hot FETCH_OBJ_R fast path. gcc already hoists,
+ * so this variant is guarded out of the gcc build to keep its codegen byte-identical and
+ * avoid perturbing execute_ex block layout. */
+# define ZVAL_COPY_DEREF(z, v) do {						\
+		zval *_z3 = (v);								\
+		zend_refcounted *_gc3 = Z_COUNTED_P(_z3);		\
+		uint32_t _t3 = Z_TYPE_INFO_P(_z3);				\
+		if (Z_TYPE_INFO_REFCOUNTED(_t3)) {				\
+			if (UNEXPECTED((_t3 & Z_TYPE_MASK) == IS_REFERENCE)) {	\
+				_z3 = Z_REFVAL_P(_z3);					\
+				_gc3 = Z_COUNTED_P(_z3);				\
+				_t3 = Z_TYPE_INFO_P(_z3);				\
+				if (Z_TYPE_INFO_REFCOUNTED(_t3)) {		\
+					GC_ADDREF(_gc3);					\
+				}										\
+			} else {									\
+				GC_ADDREF(_gc3);						\
+			}											\
+		}												\
+		ZVAL_COPY_VALUE_EX(z, _z3, _gc3, _t3);			\
+	} while (0)
+#else
 #define ZVAL_COPY_DEREF(z, v) do {						\
 		zval *_z3 = (v);								\
 		if (Z_OPT_REFCOUNTED_P(_z3)) {					\
@@ -1519,6 +1548,7 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		}												\
 		ZVAL_COPY_VALUE(z, _z3);						\
 	} while (0)
+#endif
 
 
 #define SEPARATE_STRING(zv) do {						\
