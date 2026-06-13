@@ -378,6 +378,50 @@ static const uint32_t bin_pages[] = {
 	ZEND_MM_BINS_INFO(_BIN_DATA_PAGES, x, y)
 };
 
+#ifdef HAVE_BUILTIN_CONSTANT_P
+/* Exact mapping from a small allocation size to its bin number:
+ * small_size_to_bin_lut[(size + 7) >> 3] is the smallest bin that fits
+ * `size`, for every size in [0, ZEND_MM_MAX_SMALL_SIZE].  All bin sizes are
+ * multiples of 8, so each 8-byte granule maps to exactly one bin; entry i
+ * covers sizes (i-1)*8+1 .. i*8 (entry 0 covers size 0).  This replaces a
+ * data-dependent branch plus clz arithmetic on the hot allocation path.
+ * Cache-line aligned so that one 64-byte line covers all sizes <= 504.
+ * Keep in sync with ZEND_MM_BINS_INFO (verified by ZEND_DEBUG self-check
+ * in zend_mm_init()). */
+ZEND_SET_ALIGNED(64, static const uint8_t small_size_to_bin_lut[ZEND_MM_MAX_SMALL_SIZE / 8 + 1]) = {
+	[  0 ...   1] =  0, /*    8 */
+	[          2] =  1, /*   16 */
+	[          3] =  2, /*   24 */
+	[          4] =  3, /*   32 */
+	[          5] =  4, /*   40 */
+	[          6] =  5, /*   48 */
+	[          7] =  6, /*   56 */
+	[          8] =  7, /*   64 */
+	[  9 ...  10] =  8, /*   80 */
+	[ 11 ...  12] =  9, /*   96 */
+	[ 13 ...  14] = 10, /*  112 */
+	[ 15 ...  16] = 11, /*  128 */
+	[ 17 ...  20] = 12, /*  160 */
+	[ 21 ...  24] = 13, /*  192 */
+	[ 25 ...  28] = 14, /*  224 */
+	[ 29 ...  32] = 15, /*  256 */
+	[ 33 ...  40] = 16, /*  320 */
+	[ 41 ...  48] = 17, /*  384 */
+	[ 49 ...  56] = 18, /*  448 */
+	[ 57 ...  64] = 19, /*  512 */
+	[ 65 ...  80] = 20, /*  640 */
+	[ 81 ...  96] = 21, /*  768 */
+	[ 97 ... 112] = 22, /*  896 */
+	[113 ... 128] = 23, /* 1024 */
+	[129 ... 160] = 24, /* 1280 */
+	[161 ... 192] = 25, /* 1536 */
+	[193 ... 224] = 26, /* 1792 */
+	[225 ... 256] = 27, /* 2048 */
+	[257 ... 320] = 28, /* 2560 */
+	[321 ... 384] = 29, /* 3072 */
+};
+#endif
+
 static ZEND_COLD ZEND_NORETURN void zend_mm_panic(const char *message)
 {
 	fprintf(stderr, "%s\n", message);
@@ -1250,6 +1294,14 @@ static zend_always_inline int zend_mm_small_size_to_bin(size_t size)
 	n = zend_mm_small_size_to_bit(size - 1);
 	return ((size-1) >> f1[n]) + f2[n];
 #else
+# ifdef HAVE_BUILTIN_CONSTANT_P
+	if (!__builtin_constant_p(size)) {
+		/* Runtime sizes: branchless exact LUT (see small_size_to_bin_lut).
+		 * Constant sizes keep the arithmetic below so that they constant-fold
+		 * (e.g. the _emalloc_NN specialization selectors). */
+		return small_size_to_bin_lut[(size + 7) >> 3];
+	}
+# endif
 	unsigned int t1, t2;
 
 	if (size <= 64) {
@@ -1267,6 +1319,28 @@ static zend_always_inline int zend_mm_small_size_to_bin(size_t size)
 }
 
 #define ZEND_MM_SMALL_SIZE_TO_BIN(size)  zend_mm_small_size_to_bin(size)
+
+#if ZEND_DEBUG && defined(HAVE_BUILTIN_CONSTANT_P)
+/* One-time consistency check of small_size_to_bin_lut against the
+ * ZEND_MM_BINS_INFO table: for every small size the selected bin must be the
+ * smallest one that fits. */
+static void zend_mm_check_small_size_to_bin_lut(void)
+{
+	static bool checked = false;
+	size_t size;
+
+	if (checked) {
+		return;
+	}
+	checked = true;
+	for (size = 0; size <= ZEND_MM_MAX_SMALL_SIZE; size++) {
+		int bin = zend_mm_small_size_to_bin(size);
+		ZEND_ASSERT(bin >= 0 && bin < ZEND_MM_BINS);
+		ZEND_ASSERT(bin_data_size[bin] >= size);
+		ZEND_ASSERT(bin == 0 || bin_data_size[bin - 1] < size);
+	}
+}
+#endif
 
 #if ZEND_MM_HEAP_PROTECTION
 /* We keep track of free slots by organizing them in a linked list, with the
@@ -2046,6 +2120,10 @@ static zend_mm_heap *zend_mm_init(void)
 {
 	zend_mm_chunk *chunk = (zend_mm_chunk*)zend_mm_chunk_alloc_int(ZEND_MM_CHUNK_SIZE, ZEND_MM_CHUNK_SIZE);
 	zend_mm_heap *heap;
+
+#if ZEND_DEBUG && defined(HAVE_BUILTIN_CONSTANT_P)
+	zend_mm_check_small_size_to_bin_lut();
+#endif
 
 	if (UNEXPECTED(chunk == NULL)) {
 #if ZEND_MM_ERROR
