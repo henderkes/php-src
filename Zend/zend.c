@@ -1198,6 +1198,19 @@ void zend_shutdown(void) /* {{{ */
 	free(GLOBAL_FUNCTION_TABLE);
 	free(GLOBAL_CLASS_TABLE);
 
+#ifdef ZTS
+	/* The main thread's constant table shares GLOBAL_CONSTANTS_TABLE's
+	 * persistent constants. Destroy it here, while those constants are still
+	 * alive, so its sharing-aware destructor does not read structs that the
+	 * zend_hash_destroy() below is about to free. executor_globals_dtor() then
+	 * sees a NULL table and skips it. */
+	if (EG(zend_constants) != GLOBAL_CONSTANTS_TABLE) {
+		zend_hash_destroy(EG(zend_constants));
+		free(EG(zend_constants));
+		EG(zend_constants) = NULL;
+	}
+#endif
+
 	zend_hash_destroy(GLOBAL_CONSTANTS_TABLE);
 	free(GLOBAL_CONSTANTS_TABLE);
 	zend_shutdown_strtod();

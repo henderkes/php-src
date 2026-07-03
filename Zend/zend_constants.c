@@ -70,35 +70,39 @@ void free_zend_constant(zval *zv)
 
 
 #ifdef ZTS
-static void copy_zend_constant(zval *zv)
+/* Destructor for a thread's constant table. The persistent constants are shared
+ * read-only from GLOBAL_CONSTANTS_TABLE (see zend_copy_constants()) and owned
+ * there, so only thread-local (runtime-defined, non-persistent) constants are
+ * freed here. */
+static void free_zend_constant_shared(zval *zv)
 {
 	zend_constant *c = Z_PTR_P(zv);
 
-	ZEND_ASSERT(ZEND_CONSTANT_FLAGS(c) & CONST_PERSISTENT);
-	Z_PTR_P(zv) = pemalloc(sizeof(zend_constant), 1);
-	memcpy(Z_PTR_P(zv), c, sizeof(zend_constant));
-
-	c = Z_PTR_P(zv);
-	c->name = zend_string_copy(c->name);
-	if (c->filename != NULL) {
-		c->filename = zend_string_copy(c->filename);
-	}
-	if (c->attributes != NULL) {
-		// Use the same attributes table
-		GC_ADDREF(c->attributes);
-	}
-	if (Z_TYPE(c->value) == IS_STRING) {
-		Z_STR(c->value) = zend_string_dup(Z_STR(c->value), 1);
+	if (!(ZEND_CONSTANT_FLAGS(c) & CONST_PERSISTENT)) {
+		zval_ptr_dtor_nogc(&c->value);
+		if (c->name) {
+			zend_string_release_ex(c->name, 0);
+		}
+		if (c->filename) {
+			zend_string_release_ex(c->filename, 0);
+		}
+		if (c->attributes) {
+			zend_hash_release(c->attributes);
+		}
+		efree(c);
 	}
 }
 
 
 void zend_copy_constants(HashTable *target, HashTable *source)
 {
-	/* Reserve the full target size up front so the ~2300-entry copy below does
-	 * not repeatedly rehash the freshly-initialized (128 bucket) table. */
+	/* Share the process-wide persistent constants with each thread instead of
+	 * deep-copying ~2300 structs (and their strings) into every thread's table:
+	 * reserve space, then copy the bucket pointers as-is. The structs stay owned
+	 * by GLOBAL_CONSTANTS_TABLE for the process lifetime; free_zend_constant_shared()
+	 * skips them at thread teardown. */
 	zend_hash_extend(target, source->nNumUsed, 0);
-	zend_hash_copy(target, source, copy_zend_constant);
+	zend_hash_copy(target, source, NULL);
 }
 #endif
 
@@ -124,7 +128,13 @@ void clean_module_constants(int module_number)
 void zend_startup_constants(void)
 {
 	EG(zend_constants) = (HashTable *) malloc(sizeof(HashTable));
+#ifdef ZTS
+	/* Per-thread table: persistent constants are shared from
+	 * GLOBAL_CONSTANTS_TABLE, so use the sharing-aware destructor. */
+	zend_hash_init(EG(zend_constants), 128, NULL, free_zend_constant_shared, 1);
+#else
 	zend_hash_init(EG(zend_constants), 128, NULL, ZEND_CONSTANT_DTOR, 1);
+#endif
 }
 
 
