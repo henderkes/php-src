@@ -95,6 +95,9 @@ static void copy_zend_constant(zval *zv)
 
 void zend_copy_constants(HashTable *target, HashTable *source)
 {
+	/* Reserve the full target size up front so the ~2300-entry copy below does
+	 * not repeatedly rehash the freshly-initialized (128 bucket) table. */
+	zend_hash_extend(target, source->nNumUsed, 0);
 	zend_hash_copy(target, source, copy_zend_constant);
 }
 #endif
