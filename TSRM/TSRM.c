@@ -29,6 +29,64 @@ typedef struct _tsrm_tls_entry tsrm_tls_entry;
 /* TSRMLS_CACHE_DEFINE; is already done in Zend, this is being always compiled statically. */
 TSRMLS_CACHE_EXTERN();
 
+#ifdef ZEND_WIN_TSRM_TEB_SLOT
+/* Holds &_tsrm_ls_cache in a TEB TLS slot so EG()/CG() reach it
+ * with a single gs:[] load rather than the 3-load __declspec(thread) lookup. */
+#define ZEND_WIN_TEB_TLS_SLOTS 0x1480
+
+static DWORD zend_win_tsrm_cache_slot = TLS_OUT_OF_INDEXES;
+unsigned long zend_win_tsrm_cache_offset = 0;
+
+ZEND_API zend_tsrm_ls_cache *zend_win_tsrm_cache_fallback(void)
+{
+	return &_tsrm_ls_cache;
+}
+
+ZEND_API void zend_win_tsrm_cache_shutdown(void)
+{
+	zend_win_tsrm_cache_offset = 0;
+	if (zend_win_tsrm_cache_slot != TLS_OUT_OF_INDEXES) {
+		TlsFree(zend_win_tsrm_cache_slot);
+		zend_win_tsrm_cache_slot = TLS_OUT_OF_INDEXES;
+	}
+}
+
+static void zend_win_tsrm_cache_publish(void)
+{
+	if (zend_win_tsrm_cache_slot == TLS_OUT_OF_INDEXES) {
+		return;
+	}
+	TlsSetValue(zend_win_tsrm_cache_slot, &_tsrm_ls_cache);
+	/* Verify our layout assumptions work */
+	if ((zend_tsrm_ls_cache *) __readgsqword(zend_win_tsrm_cache_offset) != &_tsrm_ls_cache) {
+		fprintf(stderr, "PHP Startup: the ZTS globals cache is not reachable through "
+			"TEB offset %lu, falling back to __declspec(thread)\n",
+			zend_win_tsrm_cache_offset);
+		zend_win_tsrm_cache_shutdown();
+	}
+}
+
+ZEND_API void zend_win_tsrm_cache_init(bool alloc)
+{
+	if (alloc) {
+		DWORD slot = TlsAlloc();
+		if (slot == TLS_OUT_OF_INDEXES) {
+			return;
+		}
+		if (slot >= TLS_MINIMUM_AVAILABLE) {
+			TlsFree(slot);
+			return;
+		}
+		zend_win_tsrm_cache_slot = slot;
+		zend_win_tsrm_cache_offset = ZEND_WIN_TEB_TLS_SLOTS
+			+ slot * (unsigned long) sizeof(void*);
+	}
+	zend_win_tsrm_cache_publish();
+}
+#else
+# define zend_win_tsrm_cache_publish() do {} while (0)
+#endif
+
 struct _tsrm_tls_entry {
 	void **storage;
 	int count;
@@ -59,7 +117,6 @@ static int					resource_types_table_size;
 /* Reserved space for fast globals access */
 static size_t tsrm_reserved_pos  = 0;
 static size_t tsrm_reserved_size = 0;
-static size_t tsrm_reserved_front = 0;
 
 static MUTEX_T tsmm_mutex;	  /* thread-safe memory manager mutex */
 static MUTEX_T tsrm_env_mutex; /* tsrm environ mutex */
@@ -105,7 +162,7 @@ static FILE *tsrm_error_file;
 #endif
 
 #ifdef TSRM_WIN32
-static DWORD tls_key;
+static DWORD tls_key = TLS_OUT_OF_INDEXES;
 # define tsrm_tls_set(what)		TlsSetValue(tls_key, (void*)(what))
 # define tsrm_tls_get()			TlsGetValue(tls_key)
 #else
@@ -157,25 +214,23 @@ TSRM_API bool tsrm_startup(int expected_threads, int expected_resources, int deb
 
 	tsrm_reserved_pos  = 0;
 	tsrm_reserved_size = 0;
-	tsrm_reserved_front = 0;
 
 	tsrm_env_mutex = tsrm_mutex_alloc();
 
 	return 1;
 }/*}}}*/
 
-static void ts_free_resources(tsrm_tls_entry *thread_resources)
+static void ts_free_resources(
+	tsrm_tls_entry *thread_resources, bool destroy_tls_resources, bool run_dtors)
 {
-	bool own_thread = thread_resources->thread_id == tsrm_thread_id();
-
 	/* Need to destroy in reverse order to respect dependencies. */
 	for (int i = thread_resources->count - 1; i >= 0; i--) {
 		if (!resource_types_table[i].done) {
-			/* A __thread block of a foreign thread is inaccessible. */
-			if (resource_types_table[i].tls_addr && !own_thread) {
+			/* Native TLS may only be accessed by its owning thread. */
+			if (resource_types_table[i].tls_addr && !destroy_tls_resources) {
 				continue;
 			}
-			if (resource_types_table[i].dtor) {
+			if (run_dtors && resource_types_table[i].dtor) {
 				resource_types_table[i].dtor(thread_resources->storage[i]);
 			}
 
@@ -189,14 +244,16 @@ static void ts_free_resources(tsrm_tls_entry *thread_resources)
 }
 
 /* Shutdown TSRM (call once for the entire process). Tears down every thread left
- * in the table. For resources allocated with ts_allocate_tls_id(), only the dtor
- * of the calling thread is invoked. */
+ * in the table. Native TLS dtors only run for the calling thread. */
 TSRM_API void tsrm_shutdown(void)
 {/*{{{*/
+	tsrm_tls_entry *current_thread_resources;
+
 	if (is_thread_shutdown) {
 		/* shutdown must only occur once */
 		return;
 	}
+	current_thread_resources = tsrm_tls_get();
 
 	is_thread_shutdown = true;
 
@@ -212,16 +269,18 @@ TSRM_API void tsrm_shutdown(void)
 			next_p = p->next;
 			if (resource_types_table) {
 				/* This call will already free p->storage for us */
-				ts_free_resources(p);
+				ts_free_resources(p, p == current_thread_resources, true);
 			} else {
 				free(p->storage);
 			}
-			free((char *) p - tsrm_reserved_front);
+			free(p);
 			p = next_p;
 		}
 	}
 	free(tsrm_tls_table);
+	tsrm_tls_table = NULL;
 	free(resource_types_table);
+	resource_types_table = NULL;
 	tsrm_mutex_free(tsmm_mutex);
 	tsrm_mutex_free(tsrm_env_mutex);
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Shutdown TSRM"));
@@ -230,10 +289,12 @@ TSRM_API void tsrm_shutdown(void)
 	}
 #ifdef TSRM_WIN32
 	TlsFree(tls_key);
+	tls_key = TLS_OUT_OF_INDEXES;
 #else
 	pthread_setspecific(tls_key, 0);
 	pthread_key_delete(tls_key);
 #endif
+	TSRMLS_CACHE = NULL;
 	if (tsrm_shutdown_handler) {
 		tsrm_shutdown_handler();
 	}
@@ -243,7 +304,6 @@ TSRM_API void tsrm_shutdown(void)
 
 	tsrm_reserved_pos  = 0;
 	tsrm_reserved_size = 0;
-	tsrm_reserved_front = 0;
 }/*}}}*/
 
 /* {{{ */
@@ -335,19 +395,10 @@ TSRM_API void tsrm_reserve(size_t size)
 }/*}}}*/
 
 
-/* Carve a fixed-offset front region out of the reserved space. It is placed
- * before the TLS entry, so the hot globals get compile-time-constant negative
- * offsets from the cache pointer. */
-TSRM_API void tsrm_reserve_fast_front(size_t size)
-{
-	tsrm_reserved_front = TSRM_ALIGNED_SIZE(size);
-	tsrm_reserved_size -= tsrm_reserved_front;
-}
-
-
 /* allocates a new fast thread-safe-resource id */
 TSRM_API ts_rsrc_id ts_allocate_fast_id(ts_rsrc_id *rsrc_id, size_t *offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
 {/*{{{*/
+	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtaining a new fast resource id, %d bytes", size));
 	tsrm_mutex_lock(tsmm_mutex);
 	size = TSRM_ALIGNED_SIZE(size);
 	if (tsrm_reserved_size - tsrm_reserved_pos < size) {
@@ -357,26 +408,12 @@ TSRM_API ts_rsrc_id ts_allocate_fast_id(ts_rsrc_id *rsrc_id, size_t *offset, siz
 		tsrm_mutex_unlock(tsmm_mutex);
 		return 0;
 	}
-	ptrdiff_t fixed_offset = TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_pos;
+	*offset = TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_pos;
 	tsrm_reserved_pos += size;
-	tsrm_mutex_unlock(tsmm_mutex);
-
-	return ts_allocate_fast_id_at(rsrc_id, offset, fixed_offset, size, ctor, dtor);
-}/*}}}*/
-
-
-TSRM_API ts_rsrc_id ts_allocate_fast_id_at(ts_rsrc_id *rsrc_id, size_t *offset, ptrdiff_t fixed_offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
-{
-	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtaining a new fast resource id, %d bytes", size));
-
-	tsrm_mutex_lock(tsmm_mutex);
 
 	/* obtain a resource id */
 	*rsrc_id = TSRM_SHUFFLE_RSRC_ID(id_count++);
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtained resource id %d", *rsrc_id));
-
-	size = TSRM_ALIGNED_SIZE(size);
-	*offset = (size_t) fixed_offset;
 
 	/* store the new resource type in the resource sizes table */
 	if (resource_types_table_size < id_count) {
@@ -403,7 +440,7 @@ TSRM_API ts_rsrc_id ts_allocate_fast_id_at(ts_rsrc_id *rsrc_id, size_t *offset, 
 
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Successfully allocated new resource id %d", *rsrc_id));
 	return *rsrc_id;
-}
+}/*}}}*/
 
 /* allocates a resource id whose per-thread storage is a native __thread block */
 TSRM_API ts_rsrc_id ts_allocate_tls_id(ts_rsrc_id *rsrc_id, void *(*tls_addr)(void), size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
@@ -444,16 +481,15 @@ static void set_thread_local_storage_resource_to(tsrm_tls_entry *thread_resource
 {
 	tsrm_tls_set(thread_resource);
 	TSRMLS_CACHE = thread_resource;
+	zend_win_tsrm_cache_publish();
 }
 
 /* Must be called with tsmm_mutex held */
 static void allocate_new_resource(tsrm_tls_entry **thread_resources_ptr, THREAD_T thread_id)
 {/*{{{*/
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Creating data structures for thread %x", thread_id));
-	/* The entry follows the fixed-offset front region.
-	 * hot globals live at negative offsets from the TLS cache pointer. */
-	char *block = (char *) malloc(tsrm_reserved_front + TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size);
-	(*thread_resources_ptr) = (tsrm_tls_entry *) (block + tsrm_reserved_front);
+	/* Fast resources live in the reserved space right behind the entry. */
+	(*thread_resources_ptr) = (tsrm_tls_entry *) malloc(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size);
 	(*thread_resources_ptr)->storage = NULL;
 	if (id_count > 0) {
 		(*thread_resources_ptr)->storage = (void **) malloc(sizeof(void *)*id_count);
@@ -548,29 +584,26 @@ TSRM_API void *ts_resource_ex(ts_rsrc_id id, THREAD_T *th_id)
 	 * goes away, but its resources are never cleaned up, and then that thread ID is reused.
 	 * Since we don't always have a way to know when a thread goes away, we can't clean up
 	 * the thread's resources before the new thread spawns.
-	 * To solve this issue, we'll free up the old thread resources gracefully (gracefully
-	 * because there might still be resources open like database connection which need to
-	 * be shut down cleanly). After freeing up, we'll create the new resources for this thread
-	 * as if the stale resources never existed in the first place. From that point forward,
-	 * it is as if that situation never occurred.
+	 * The old native TLS is no longer accessible, so its destructors cannot run safely.
+	 * Release the directly owned allocations and create fresh resources for the new thread.
 	 * The fact that this situation happens isn't that bad because a child process containing
 	 * threads will eventually be respawned anyway by the SAPI, so the stale threads won't last
 	 * forever. */
 	TSRM_ASSERT(thread_resources->thread_id == thread_id);
 	if (thread_id == tsrm_thread_id() && !tsrm_tls_get()) {
 		tsrm_tls_entry *next = thread_resources->next;
-		/* In case that extensions don't use the pointer passed from the dtor, but incorrectly
-		 * use the global pointer, we need to setup the global pointer temporarily here. */
-		set_thread_local_storage_resource_to(thread_resources);
-		/* Dead thread with a recycled id: its __thread blocks are gone, and this
-		 * thread's blocks were never constructed, so keep tls dtors from running. */
-		thread_resources->thread_id = 0;
-		ts_free_resources(thread_resources);
-		free((char *) thread_resources - tsrm_reserved_front);
+		/* Keep signal handlers away from both the stale entry and the replacement
+		 * until all of the replacement's resources have been constructed. */
+		is_thread_shutdown = true;
+		/* The dead thread's native TLS is gone, and its remaining resource dtors
+		 * may depend on those globals. Only release directly owned allocations. */
+		ts_free_resources(thread_resources, false, false);
+		free(thread_resources);
 		/* Allocate a new resource at the same point in the linked list, and relink the next pointer */
 		allocate_new_resource(last_thread_resources, thread_id);
 		thread_resources = *last_thread_resources;
 		thread_resources->next = next;
+		is_thread_shutdown = false;
 		/* We don't have to tail-call ts_resource_ex, we can take the fast path to the return
 		 * because we already have the correct pointer. */
 	}
@@ -588,34 +621,39 @@ TSRM_API void *ts_resource_ex(ts_rsrc_id id, THREAD_T *th_id)
 /* frees all resources allocated for the current thread */
 void ts_free_thread(void)
 {/*{{{*/
-	tsrm_tls_entry *thread_resources;
-	THREAD_T thread_id = tsrm_thread_id();
+	tsrm_tls_entry *thread_resources = tsrm_tls_get();
+	tsrm_tls_entry *p;
 	int hash_value;
 	tsrm_tls_entry *last=NULL;
 
 	TSRM_ASSERT(!in_main_thread);
+	if (!thread_resources) {
+		return;
+	}
 
 	tsrm_mutex_lock(tsmm_mutex);
-	hash_value = THREAD_HASH_OF(thread_id, tsrm_tls_table_size);
-	thread_resources = tsrm_tls_table[hash_value];
+	hash_value = THREAD_HASH_OF(thread_resources->thread_id, tsrm_tls_table_size);
+	p = tsrm_tls_table[hash_value];
 
-	while (thread_resources) {
-		if (thread_resources->thread_id == thread_id) {
-			ts_free_resources(thread_resources);
+	while (p) {
+		if (p == thread_resources) {
+			ts_free_resources(thread_resources, true, true);
 			if (last) {
-				last->next = thread_resources->next;
+				last->next = p->next;
 			} else {
-				tsrm_tls_table[hash_value] = thread_resources->next;
+				tsrm_tls_table[hash_value] = p->next;
 			}
 			tsrm_tls_set(0);
-			free((char *) thread_resources - tsrm_reserved_front);
-			break;
+			TSRMLS_CACHE = NULL;
+			free(thread_resources);
+			tsrm_mutex_unlock(tsmm_mutex);
+			return;
 		}
-		if (thread_resources->next) {
-			last = thread_resources;
-		}
-		thread_resources = thread_resources->next;
+		last = p;
+		p = p->next;
 	}
+	tsrm_tls_set(0);
+	TSRMLS_CACHE = NULL;
 	tsrm_mutex_unlock(tsmm_mutex);
 }/*}}}*/
 
@@ -623,6 +661,7 @@ void ts_free_thread(void)
 void ts_free_id(ts_rsrc_id id)
 {/*{{{*/
 	int rsrc_id = TSRM_UNSHUFFLE_RSRC_ID(id);
+	tsrm_tls_entry *current_thread_resources = tsrm_tls_get();
 
 	tsrm_mutex_lock(tsmm_mutex);
 
@@ -634,7 +673,9 @@ void ts_free_id(ts_rsrc_id id)
 
 			while (p) {
 				if (p->count > rsrc_id && p->storage[rsrc_id]) {
-					if (resource_types_table) {
+					/* Native TLS may only be accessed by its owning thread. */
+					if (resource_types_table
+					 && (!resource_types_table[rsrc_id].tls_addr || p == current_thread_resources)) {
 						if (resource_types_table[rsrc_id].dtor) {
 							resource_types_table[rsrc_id].dtor(p->storage[rsrc_id]);
 						}
@@ -658,15 +699,20 @@ void ts_free_id(ts_rsrc_id id)
 TSRM_API void ts_apply_for_id(ts_rsrc_id id, void (*cb)(void *))
 {
 	int rsrc_id = TSRM_UNSHUFFLE_RSRC_ID(id);
+	tsrm_tls_entry *current_thread_resources = tsrm_tls_get();
 
 	tsrm_mutex_lock(tsmm_mutex);
 
 	if (tsrm_tls_table && resource_types_table) {
+		bool tls_backed = resource_types_table[rsrc_id].tls_addr != NULL;
+
 		for (int i = 0; i < tsrm_tls_table_size; i++) {
 			tsrm_tls_entry *p = tsrm_tls_table[i];
 
 			while (p) {
-				if (p->count > rsrc_id && p->storage[rsrc_id]) {
+				/* Native TLS may only be accessed by its owning thread. */
+				if (p->count > rsrc_id && p->storage[rsrc_id]
+				 && (!tls_backed || p == current_thread_resources)) {
 					cb(p->storage[rsrc_id]);
 				}
 				p = p->next;
@@ -852,7 +898,10 @@ TSRM_API void *tsrm_get_ls_cache(void)
 /* Returns offset of tsrm_ls_cache slot from Thread Control Block address */
 TSRM_API size_t tsrm_get_ls_cache_tcb_offset(void)
 {/*{{{*/
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(TSRM_TLS_MODEL_GLOBAL_DYNAMIC)
+	/* No constant TCB offset under global-dynamic, can't use fast path */
+	return 0;
+#elif defined(__APPLE__) && defined(__x86_64__)
     // TODO: Implement support for fast JIT ZTS code ???
 	return 0;
 #elif defined(__x86_64__) && defined(__GNUC__) && !defined(__FreeBSD__) && \
