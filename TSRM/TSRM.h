@@ -207,14 +207,13 @@ typedef struct _zend_tsrm_ls_cache zend_tsrm_ls_cache;
 # define ZEND_TSRMLS_CACHE_T zend_tsrm_ls_cache
 # define TSRMLS_CACHE_DEFINE()
 extern ZEND_TLS_API TSRM_TLS TSRM_TLS_MODEL_ATTR zend_tsrm_ls_cache _tsrm_ls_cache;
-# if defined(_WIN64) && defined(_M_X64)
+# if defined(_WIN64) && defined(_M_X64) && defined(__clang__)
 /* See TSRM.c: zend_win_tsrm_cache_init */
 #  define ZEND_WIN_TSRM_TEB_SLOT 1
 extern unsigned long zend_win_tsrm_cache_offset;
 ZEND_API void zend_win_tsrm_cache_init(bool alloc);
 ZEND_API void zend_win_tsrm_cache_shutdown(void);
 ZEND_API zend_tsrm_ls_cache *zend_win_tsrm_cache_fallback(void);
-#  ifdef __clang__
 static __inline__ __attribute__((const, always_inline)) zend_tsrm_ls_cache *zend_win_tsrm_cache_ptr(void)
 {
 	uintptr_t offset = zend_win_tsrm_cache_offset;
@@ -227,18 +226,9 @@ static __inline__ __attribute__((const, always_inline)) zend_tsrm_ls_cache *zend
 		: "r" (offset));
 	return ptr;
 }
-#  else
-static __forceinline zend_tsrm_ls_cache *zend_win_tsrm_cache_ptr(void)
-{
-	unsigned long offset = zend_win_tsrm_cache_offset;
-	if (offset == 0) {
-		return zend_win_tsrm_cache_fallback();
-	}
-	return (zend_tsrm_ls_cache *) __readgsqword(offset);
-}
-#  endif
 #  define ZEND_TSRM_CACHE_PTR zend_win_tsrm_cache_ptr()
 # else
+/* MSVC can reuse native TLS address calculations. */
 #  define ZEND_TSRM_CACHE_PTR (&_tsrm_ls_cache)
 # endif
 # define ZEND_TSRMG_DIRECT(id, type, member, element) (ZEND_TSRM_CACHE_PTR->member.element)
