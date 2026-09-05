@@ -330,6 +330,21 @@ AS_VAR_IF([php_cv_have_global_register_vars], [yes],
 ])
 AC_MSG_CHECKING([whether to enable global register variables support])
 AC_MSG_RESULT([$ZEND_GCC_GLOBAL_REGS])
+
+dnl GCC doesn't propagate -ffixed-* from LTO objects. Reserve the VM registers
+dnl before LTO code gen to avoid "global register variable follows a function definition"
+AS_VAR_IF([ZEND_GCC_GLOBAL_REGS], [yes], [
+  zend_lto=no
+  for zend_flag in $CC $CFLAGS $LDFLAGS; do
+    AS_CASE([$zend_flag], [-flto|-flto=*], [zend_lto=yes], [-fno-lto], [zend_lto=no])
+  done
+  AS_VAR_IF([zend_lto], [yes], [
+    AS_CASE([$host_cpu],
+      [x86_64], [AS_VAR_APPEND([LDFLAGS], [" -ffixed-r14 -ffixed-r15"])],
+      [aarch64*], [AS_VAR_APPEND([LDFLAGS], [" -ffixed-x27 -ffixed-x28"])],
+      [AC_MSG_ERROR([Cannot reserve VM registers for LTO, disable lto or use --disable-gcc-global-regs])])
+  ])
+])
 ])
 
 dnl
