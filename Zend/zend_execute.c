@@ -2292,7 +2292,7 @@ static void zend_incdec_typed_prop(const zend_property_info *prop_info, zval *va
 	}
 }
 
-static void zend_pre_incdec_property_zval(zval *prop, const zend_property_info *prop_info OPLINE_DC EXECUTE_DATA_DC)
+static zend_always_inline void zend_pre_incdec_property_zval(zval *prop, const zend_property_info *prop_info OPLINE_DC EXECUTE_DATA_DC)
 {
 	if (EXPECTED(Z_TYPE_P(prop) == IS_LONG)) {
 		if (ZEND_IS_INCREMENT(opline->opcode)) {
