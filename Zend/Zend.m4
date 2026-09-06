@@ -340,6 +340,7 @@ AS_VAR_IF([ZEND_GCC_GLOBAL_REGS], [yes], [
   done
   AS_VAR_IF([zend_lto], [yes], [
     AS_CASE([$host_cpu],
+      [i386], [AS_VAR_APPEND([LDFLAGS], [" -ffixed-esi -ffixed-edi"])],
       [x86_64], [AS_VAR_APPEND([LDFLAGS], [" -ffixed-r14 -ffixed-r15"])],
       [aarch64*], [AS_VAR_APPEND([LDFLAGS], [" -ffixed-x27 -ffixed-x28"])],
       [AC_MSG_ERROR([Cannot reserve VM registers for LTO, disable lto or use --disable-gcc-global-regs])])
