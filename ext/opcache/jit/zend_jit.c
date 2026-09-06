@@ -3099,6 +3099,12 @@ jit_failure:
 	return FAILURE;
 }
 
+#if defined(__GNUC__) && !defined(__clang__) && ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
+/* GCC cannot tail-call from a function that uses setjmp. */
+static zend_never_inline void zend_runtime_jit_compile(zend_op_array *op_array)
+{
+	const zend_op *opline = op_array->opcodes;
+#else
 /* Run-time JIT handler */
 #if ZEND_VM_KIND == ZEND_VM_KIND_CALL || ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
 static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV zend_runtime_jit(ZEND_OPCODE_HANDLER_ARGS)
@@ -3116,6 +3122,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV zend_runtime_jit(Z
 	execute_data = EG(current_execute_data);
 	zend_op_array *op_array = &EX(func)->op_array;
 	opline = op_array->opcodes;
+#endif
 	zend_jit_op_array_extension *jit_extension;
 	bool do_bailout = 0;
 
@@ -3153,6 +3160,16 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV zend_runtime_jit(Z
 	if (do_bailout) {
 		zend_bailout();
 	}
+
+#if defined(__GNUC__) && !defined(__clang__) && ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV zend_runtime_jit(ZEND_OPCODE_HANDLER_ARGS)
+{
+	const zend_op *orig_opline = opline;
+	execute_data = EG(current_execute_data);
+	zend_runtime_jit_compile(&EX(func)->op_array);
+#endif
 
 	/* JIT-ed code is going to be called by VM */
 #if GCC_GLOBAL_REGS
