@@ -2610,7 +2610,9 @@ ZEND_API void ZEND_FASTCALL zend_hash_merge(HashTable *target, const HashTable *
 		}
 	} else {
 		if (HT_IS_PACKED(source)) {
-			for (idx = 0; idx < source->nNumUsed; idx++) {
+			/* A packed target without holes already contains all smaller keys. */
+			idx = HT_IS_PACKED(target) && HT_IS_WITHOUT_HOLES(target) ? target->nNumUsed : 0;
+			for (; idx < source->nNumUsed; idx++) {
 				s = source->arPacked + idx;
 				if (UNEXPECTED(Z_TYPE_P(s) == IS_UNDEF)) {
 					continue;
